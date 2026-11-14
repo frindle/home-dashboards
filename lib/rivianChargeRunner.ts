@@ -7,7 +7,7 @@ import { mkdir, readFile, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { escapeTag, influxTarget, writeLines } from './chargeSessionInflux.ts';
 import {
-  initialChargeState, stepChargeLog, MAX_GAP_MS,
+  initialChargeState, stepChargeLog,
   type CarChargeRecord, type ChargeState,
 } from './rivianChargeLog.ts';
 
@@ -59,11 +59,20 @@ async function persistOpen(s: ChargeState): Promise<void> {
   } catch (e) { console.error('[rivian-charge] persist failed:', e instanceof Error ? e.message : e); }
 }
 
-async function loadState(now: number): Promise<ChargeState> {
+// Always reload what was saved, however old: lastEnergy is the baseline that
+// stops a still-frozen Parallax total being taken as the next session's
+// energy, and a stale open session is closed by stepChargeLog as a gap row
+// (MAX_GAP_MS) instead of being silently dropped.
+async function loadState(): Promise<ChargeState> {
   try {
-    const s = JSON.parse(await readFile(openPath(), 'utf-8')) as ChargeState;
-    const last = s?.lastPollMs;
-    if (s && typeof last === 'number' && now - last <= MAX_GAP_MS) return s;
+    const s = JSON.parse(await readFile(openPath(), 'utf-8')) as Partial<ChargeState> | null;
+    if (s && typeof s === 'object') {
+      return {
+        open: s.open && typeof s.open.startMs === 'number' && typeof s.open.lastPollMs === 'number' ? s.open : null,
+        lastEnergy: typeof s.lastEnergy === 'number' && Number.isFinite(s.lastEnergy) ? s.lastEnergy : null,
+        lastPollMs: typeof s.lastPollMs === 'number' ? s.lastPollMs : null,
+      };
+    }
   } catch { /* none or unreadable */ }
   return initialChargeState();
 }
@@ -88,7 +97,8 @@ export function recordRivianChargePoll(
 ): Promise<void> {
   const run = chain.then(async () => {
     try {
-      if (!state) state = await loadState(now);
+      if (!state) state = await loadState();
+      const prevEnergy = state.lastEnergy;
       const out = stepChargeLog(state, {
         ms: now,
         isCharging: !!s.isCharging,
@@ -101,7 +111,7 @@ export function recordRivianChargePoll(
       const hadOpen = state.open !== null;
       state = out.state;
       if (out.session) await appendSession(out.session);
-      if (state.open || hadOpen || out.session) await persistOpen(state);
+      if (state.open || hadOpen || out.session || state.lastEnergy !== prevEnergy) await persistOpen(state);
     } catch (e) {
       console.error('[rivian-charge] poll failed:', e instanceof Error ? e.message : e);
     }
