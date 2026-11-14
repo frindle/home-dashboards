@@ -169,6 +169,22 @@ function writeState(patch) {
   }
 }
 
+// Raw payloads, so fields we don't decode yet (the breakdown message's
+// pack/thermal/system split, cell temps) can be mapped offline. Same folder,
+// so the 14-day cleanup below covers these files too. Charging data only.
+const RAW_PAYLOAD_MAX = 4096;
+function logRawFrame(rvm, payload) {
+  if (typeof payload !== 'string' || !payload) return;
+  try {
+    fs.mkdirSync(PARALLAX_LOG_DIR, { recursive: true });
+    const dateStr = new Date().toISOString().split('T')[0];
+    fs.appendFileSync(path.join(PARALLAX_LOG_DIR, `raw-${dateStr}.jsonl`),
+      JSON.stringify({ receivedAt: new Date().toISOString(), rvm, payload: payload.slice(0, RAW_PAYLOAD_MAX) }) + '\n');
+  } catch (e) {
+    console.warn('[parallax] raw log failed:', e.message);
+  }
+}
+
 function logParallaxFrame(state) {
   try {
     fs.mkdirSync(PARALLAX_LOG_DIR, { recursive: true });
@@ -300,6 +316,7 @@ function connect() {
 
     const decoder = DECODERS[data.rvm];
     if (!decoder) return;
+    logRawFrame(data.rvm, data.payload);
     let decoded;
     try {
       decoded = decoder(data.payload);
