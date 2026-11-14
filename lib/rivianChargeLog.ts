@@ -41,7 +41,7 @@ export interface ChargeState {
 }
 
 export interface CarChargeRecord {
-  source: 'rivian-car';
+  source: 'rivian-car' | 'roamer';
   startedAt: string;
   endedAt: string;
   durationMin: number;
@@ -52,6 +52,11 @@ export interface CarChargeRecord {
   atHome: boolean | null;
   evseType: number | null;
   gap?: true;
+  // Roamer backfill rows only.
+  packKwh?: number | null;
+  efficiencyPct?: number | null;
+  avgKw?: number | null;
+  peakKw?: number | null;
 }
 
 export interface ChargeStep {

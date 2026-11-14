@@ -5,12 +5,14 @@
 import { parseCsv } from './csv.ts';
 import { parseTimestamp } from './pacificTime.ts';
 import { MIN_DRIVE_MI, type DriveRecord } from './rivianDriveLog.ts';
+import type { CarChargeRecord } from './rivianChargeLog.ts';
 import { computeDailyUse, type DailyUseRow, type UseCharge } from './rivianDailyUse.ts';
 
 export interface SeedResult {
   drives: DriveRecord[];
   daily: DailyUseRow[];
   charges: UseCharge[];
+  carCharges: CarChargeRecord[];
   skipped: { corrupted: number; short: number; incomplete: number };
 }
 
@@ -70,7 +72,21 @@ export function seedFromRoamer(drivesCsv: string, chargesCsv: string, since: str
   const cStart = col(ct, 'Started At'), cEnd = col(ct, 'Ended At');
   const cS = col(ct, 'Start Battery (%)'), cE = col(ct, 'End Battery (%)');
   const cBad = col(ct, 'Corrupted', false);
+  const cEnergy = col(ct, 'Energy (kWh)', false), cPack = col(ct, 'Pack (kWh)', false);
+  const cEff = col(ct, 'Charging Efficiency (%)', false), cAvg = col(ct, 'Avg Power (kW)', false);
+  const cPeak = col(ct, 'Peak Power (kW)', false), cLoc = col(ct, 'Location', false);
+  // Location text is only used to find the home place (most frequent) and is never stored.
+  const locCount = new Map<string, number>();
+  if (cLoc >= 0) {
+    for (const r of ct.rows) {
+      const l = (r[cLoc] ?? '').trim();
+      if (l) locCount.set(l, (locCount.get(l) ?? 0) + 1);
+    }
+  }
+  let homeLoc: string | null = null, homeN = 0;
+  for (const [l, n] of locCount) if (n > homeN) { homeLoc = l; homeN = n; }
   const charges: UseCharge[] = [];
+  const carCharges: CarChargeRecord[] = [];
   for (const r of ct.rows) {
     if (r.every((c) => c.trim() === '')) continue;
     if (cBad >= 0 && truthy(r[cBad])) { skipped.corrupted++; continue; }
@@ -78,7 +94,22 @@ export function seedFromRoamer(drivesCsv: string, chargesCsv: string, since: str
     const start = parseTimestamp(r[cStart]), end = parseTimestamp(r[cEnd]);
     if (sinceMs !== null && start < sinceMs) continue;
     charges.push({ start: new Date(start).toISOString(), end: new Date(end).toISOString(), start_soc: num(r[cS]), end_soc: num(r[cE]) });
+    const sS = num(r[cS]), sE = num(r[cE]);
+    const loc = cLoc >= 0 ? (r[cLoc] ?? '').trim() : '';
+    const opt = (i: number) => (i >= 0 ? num(r[i]) : null);
+    carCharges.push({
+      source: 'roamer',
+      startedAt: new Date(start).toISOString(), endedAt: new Date(end).toISOString(),
+      durationMin: Math.round((end - start) / 6000) / 10,
+      energyKwh: opt(cEnergy),
+      startSoc: sS, endSoc: sE,
+      socDelta: sS !== null && sE !== null ? Math.round((sE - sS) * 10) / 10 : null,
+      atHome: loc === '' ? null : loc === homeLoc,
+      evseType: null,
+      packKwh: opt(cPack), efficiencyPct: opt(cEff), avgKw: opt(cAvg), peakKw: opt(cPeak),
+    });
   }
 
-  return { drives, charges, daily: computeDailyUse(drives, charges, null), skipped };
+  carCharges.sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt));
+  return { drives, charges, carCharges, daily: computeDailyUse(drives, charges, null), skipped };
 }

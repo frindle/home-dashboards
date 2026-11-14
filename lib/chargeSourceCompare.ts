@@ -34,6 +34,7 @@ export interface CompareSummary {
   meanAbsDiffKwh: number | null;
   wcKwhPerSocPct: number | null;   // sum(wcKwh)/sum(socDelta) over pairs with socDelta >= 1
   carKwhPerSocPct: number | null;
+  bySource: { 'rivian-car': number; roamer: number; roamerDroppedAsDuplicate: number };
 }
 
 export interface CompareResult {
@@ -51,7 +52,18 @@ function overlapMs(aS: number, aE: number, bS: number, bE: number): number {
   return Math.min(aE, bE) - Math.max(aS, bS) + 2 * OVERLAP_SLACK_MS;
 }
 
-export function compareSources(car: CarChargeRecord[], wc: WcRow[]): CompareResult {
+export function compareSources(carAll: CarChargeRecord[], wc: WcRow[]): CompareResult {
+  // Live car rows win: a roamer backfill row overlapping one is a duplicate.
+  const live = carAll.filter((c) => c.source !== 'roamer')
+    .map((c) => ({ s: Date.parse(c.startedAt), e: Date.parse(c.endedAt) }));
+  let roamerDropped = 0;
+  const car = carAll.filter((c) => {
+    if (c.source !== 'roamer') return true;
+    const s = Date.parse(c.startedAt), e = Date.parse(c.endedAt);
+    const dup = live.some((l) => overlapMs(s, e, l.s, l.e) > 0);
+    if (dup) roamerDropped++;
+    return !dup;
+  });
   const carT = car.map((c) => ({ c, s: Date.parse(c.startedAt), e: Date.parse(c.endedAt) }));
   const groups = new Map<number, WcRow[]>();
   const wcOnly: WcRow[] = [];
@@ -103,6 +115,11 @@ export function compareSources(car: CarChargeRecord[], wc: WcRow[]): CompareResu
   return {
     pairs, carOnly, wcOnly,
     summary: {
+      bySource: {
+        'rivian-car': car.filter((c) => c.source !== 'roamer').length,
+        roamer: car.filter((c) => c.source === 'roamer').length,
+        roamerDroppedAsDuplicate: roamerDropped,
+      },
       pairs: pairs.length,
       ratioPairs: ratios.length,
       medianRatio: ratios.length ? r3(ratios.length % 2 ? ratios[mid] : (ratios[mid - 1] + ratios[mid]) / 2) : null,

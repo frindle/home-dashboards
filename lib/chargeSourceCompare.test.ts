@@ -68,3 +68,14 @@ test('empty inputs give an empty summary', () => {
   assert.equal(r.summary.pairs, 0);
   assert.equal(r.summary.meanRatio, null);
 });
+
+test('roamer rows overlapping a live car row are dropped; counts reported per source', () => {
+  const live = car(0, 4, 44, 40);
+  const dup = { ...car(0.2, 3.8, 43, 40), source: 'roamer' as const };
+  const old = { ...car(100, 102, 20, 20), source: 'roamer' as const };
+  const r = compareSources([live, dup, old], [wc(0, 4, 40)]);
+  assert.deepEqual(r.summary.bySource, { 'rivian-car': 1, roamer: 1, roamerDroppedAsDuplicate: 1 });
+  assert.equal(r.pairs.length, 1);
+  assert.equal(r.carOnly.length, 1);
+  assert.equal(r.carOnly[0].source, 'roamer');
+});
