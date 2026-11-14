@@ -38,6 +38,7 @@ import { logWcDiagnostic } from '@/lib/wcDiagnostics';
 import { readGarageDoorState, type GarageDoorState } from '@/lib/ratgdo';
 import { redactDashboardLocation } from '@/lib/vacation';
 import { recordRivianDrivePoll, refreshRivianDailyUse } from '@/lib/rivianDriveRunner';
+import { recordRivianChargePoll } from '@/lib/rivianChargeRunner';
 import { finishStats, startStats, stepStats, type SessionStats } from '@/lib/chargeSessionStats';
 
 export const dynamic = 'force-dynamic';
@@ -1022,6 +1023,7 @@ async function handleGet(req: Request) {
   // Drive + daily-use log (#6). Location only decides at_home and a salted
   // cell hash inside the logger; nothing here is stored or returned.
   if (rivianState) void recordRivianDrivePoll(rivianState, rivianAtHome, weather?.temp ?? null, rivianHome.fresh);
+  if (rivianState) void recordRivianChargePoll(rivianState, rivianAtHome);
 
   const teslaHome = computeAtHome('tesla', teslaState?.lat, teslaState?.lon, !!(teslaState && (teslaState as { _gpsFresh?: boolean })._gpsFresh));
   const teslaAtHome = teslaHome.atHome;

@@ -86,3 +86,30 @@ test('seedFromRoamer: no --since keeps older rows; bad timestamps and headers fa
   assert.throws(() => seedFromRoamer(DRIVE_HEADER + '\n' + drive('not a time', '2026-05-10 08:30:00', 5, 80, 70, '60'), CHARGES), /unparseable/);
   assert.throws(() => seedFromRoamer('Foo,Bar\n1,2', CHARGES), /missing column/);
 });
+
+test('seedFromRoamer: carCharges shape, modal-location atHome, corrupted skipped, no Location text', () => {
+  const row = (start: string, end: string, kwh: number, loc: string, bad = 'false') =>
+    `${start},${end},${kwh},${kwh - 1},0,0,0,92,9.6,11.5,40,2,0.1,5,3,40,80,${loc},Site,None,,API,${bad}`;
+  const csv = [
+    CHARGE_HEADER,
+    row('2026-05-09 01:00:00', '2026-05-09 06:00:00', 40, '"12 Secret Ln, Nowhere, ST"'),
+    row('2026-05-10 01:00:00', '2026-05-10 06:00:00', 38, '"12 Secret Ln, Nowhere, ST"'),
+    row('2026-05-11 12:00:00', '2026-05-11 13:00:00', 20, '"99 Elsewhere Rd, Faraway, ST"'),
+    row('2026-05-12 12:00:00', '2026-05-12 13:00:00', 10, ''),
+    row('2026-05-13 12:00:00', '2026-05-13 13:00:00', 10, '"12 Secret Ln, Nowhere, ST"', 'true'),
+    row('2026-04-01 01:00:00', '2026-04-01 06:00:00', 10, '"12 Secret Ln, Nowhere, ST"'),
+  ].join('\n');
+  const r = seedFromRoamer(DRIVES, csv, '2026-05-06');
+  assert.equal(r.carCharges.length, 4);
+  assert.deepEqual(r.carCharges.map((c) => c.atHome), [true, true, false, null]);
+  const c = r.carCharges[0];
+  assert.equal(c.source, 'roamer');
+  assert.equal(c.energyKwh, 40);
+  assert.equal(c.packKwh, 39);
+  assert.equal(c.efficiencyPct, 92);
+  assert.equal(c.avgKw, 9.6);
+  assert.equal(c.peakKw, 11.5);
+  assert.equal(c.socDelta, 40);
+  assert.equal(c.durationMin, 300);
+  assert.ok(!/Secret|Nowhere|Elsewhere|Faraway/i.test(JSON.stringify(r.carCharges)));
+});

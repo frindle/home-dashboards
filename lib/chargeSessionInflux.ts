@@ -43,7 +43,7 @@ export function vehicleIdResolver(cfg: Pick<AppConfig, 'vehicles'> | null | unde
   return (row) => byName.get(row.vehicleName) ?? bySide.get(row.side) ?? 'unknown';
 }
 
-function escapeTag(value: string): string {
+export function escapeTag(value: string): string {
   return value.replace(/[\\,= ]/g, (c) => '\\' + c);
 }
 
