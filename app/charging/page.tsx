@@ -134,7 +134,7 @@ export default async function ChargingPage() {
       <main className="cc">
         <div className="cc-top">
           <h1>Charging, next 14 days</h1>
-          <nav aria-label="Related pages"><Link href="/">Dashboard</Link> <Link href="/trips">Trips</Link></nav>
+          <nav aria-label="Related pages"><Link href="/">Dashboard</Link> <Link href="/trips">Trips</Link> <Link href="/charging/compare">Car vs wall</Link></nav>
         </div>
         {!v && <p className="cc-warn">The plan could not be read right now.</p>}
         {v && <>
