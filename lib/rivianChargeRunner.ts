@@ -21,6 +21,12 @@ export interface ChargeRunnerInput {
   evseType?: number | null;
 }
 
+// Per-poll readings that aren't part of the vehicle state.
+export interface ChargeRunnerExtra {
+  tempF?: number | null;
+  powerKw?: number | null;
+}
+
 function dir(): string {
   return process.env.CHARGE_HISTORY_DIR ?? process.env.KEYS_DIR ?? join(process.cwd(), 'keys');
 }
@@ -46,7 +52,8 @@ export function carSessionLine(r: CarChargeRecord): string | null {
   const fields: string[] = [];
   if (r.energyKwh !== null) fields.push(`energy_kwh=${r.energyKwh}`);
   fields.push(`duration_min=${r.durationMin}`);
-  for (const [k, v] of [['start_soc', r.startSoc], ['end_soc', r.endSoc], ['soc_delta', r.socDelta]] as const) {
+  for (const [k, v] of [['start_soc', r.startSoc], ['end_soc', r.endSoc], ['soc_delta', r.socDelta],
+    ['temp_f', r.tempF], ['avg_kw', r.avgKw], ['peak_kw', r.peakKw]] as const) {
     if (v !== null && v !== undefined) fields.push(`${k}=${v}`);
   }
   return `${CAR_MEASUREMENT},vehicle=rivian,location=${location},evse=${escapeTag(evse)} ${fields.join(',')} ${Math.round(ts)}`;
@@ -93,7 +100,7 @@ let state: ChargeState | null = null;
 let chain: Promise<unknown> = Promise.resolve();
 
 export function recordRivianChargePoll(
-  s: ChargeRunnerInput, atHome: boolean | null, now = Date.now(),
+  s: ChargeRunnerInput, atHome: boolean | null, now = Date.now(), extra: ChargeRunnerExtra = {},
 ): Promise<void> {
   const run = chain.then(async () => {
     try {
@@ -107,6 +114,8 @@ export function recordRivianChargePoll(
         energyKwh: typeof s.totalChargedEnergyKwh === 'number' ? s.totalChargedEnergyKwh : null,
         atHome,
         evseType: typeof s.evseType === 'number' ? s.evseType : null,
+        tempF: typeof extra.tempF === 'number' ? extra.tempF : null,
+        powerKw: typeof extra.powerKw === 'number' ? extra.powerKw : null,
       });
       const hadOpen = state.open !== null;
       state = out.state;

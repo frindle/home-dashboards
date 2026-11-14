@@ -1,6 +1,9 @@
 // Measured wall kWh per 1% of SoC gained (EV charge plan #6): the rolling
 // median over the last SESSIONS home sessions that gained >= MIN_GAIN_PCT.
 // Pure; the night plan (lib/rivianNightPlan.ts) calls it with the Rivian's rows.
+import { compareSources, type WcRow } from './chargeSourceCompare.ts';
+import type { CarChargeRecord } from './rivianChargeLog.ts';
+
 export const KWH_PER_PCT_SEED = 1.44;
 export const KWH_PER_PCT_SESSIONS = 20;
 export const KWH_PER_PCT_MIN_GAIN = 10;
@@ -31,4 +34,19 @@ export function measuredKwhPerPct(rows: SessionSocRow[], seed: number = KWH_PER_
   const mid = samples.length >> 1;
   const median = samples.length % 2 ? samples[mid] : (samples[mid - 1] + samples[mid]) / 2;
   return Math.round(median * 1000) / 1000;
+}
+
+// Wall Connector rows written before the WC log carried SoC have none, so on
+// their own they leave the plan on the seed. Pair each WC session with the
+// car-reported session it overlaps and use the car's SoC gain against the
+// wall energy. Car gap rows (logger down mid-charge) under-count the gain, so
+// their WC rows stay unpaired; unpaired WC rows pass through with their own
+// SoC, if any.
+export function kwhPerPctRows(car: CarChargeRecord[], wc: WcRow[]): SessionSocRow[] {
+  if (!car.length) return wc;
+  const { pairs, wcOnly } = compareSources(car.filter((c) => !c.gap), wc);
+  return [
+    ...pairs.map((p) => ({ startedAt: p.carStartedAt, energyKwh: p.wcKwh, startSoc: 0, endSoc: p.socDelta })),
+    ...wcOnly,
+  ];
 }

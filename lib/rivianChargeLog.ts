@@ -18,6 +18,8 @@ export interface ChargePoll {
   energyKwh: number | null;
   atHome: boolean | null;
   evseType: number | null;
+  tempF?: number | null;         // outside temp at this poll
+  powerKw?: number | null;       // Parallax charging power, null when stale
 }
 
 export interface OpenCharge {
@@ -32,6 +34,12 @@ export interface OpenCharge {
   anyHome: boolean;
   anyAway: boolean;
   evseType: number | null;
+  // Optional so state saved before these existed still loads.
+  tempSum?: number;
+  tempN?: number;
+  kwSum?: number;
+  kwN?: number;
+  peakKw?: number | null;
 }
 
 export interface ChargeState {
@@ -52,11 +60,12 @@ export interface CarChargeRecord {
   atHome: boolean | null;
   evseType: number | null;
   gap?: true;
+  tempF?: number | null;         // mean outside temp over charging polls
+  avgKw?: number | null;         // live: mean Parallax power over charging polls
+  peakKw?: number | null;
   // Roamer backfill rows only.
   packKwh?: number | null;
   efficiencyPct?: number | null;
-  avgKw?: number | null;
-  peakKw?: number | null;
 }
 
 export interface ChargeStep {
@@ -70,6 +79,7 @@ export function initialChargeState(): ChargeState {
 }
 
 const round1 = (n: number) => Math.round(n * 10) / 10;
+const round2 = (n: number) => Math.round(n * 100) / 100;
 
 function finish(o: OpenCharge, gap: boolean): CarChargeRecord | null {
   const socDelta = o.startSoc !== null && o.endSoc !== null ? round1(o.endSoc - o.startSoc) : null;
@@ -87,6 +97,9 @@ function finish(o: OpenCharge, gap: boolean): CarChargeRecord | null {
     socDelta,
     atHome: o.anyHome ? true : o.anyAway ? false : null,
     evseType: o.evseType,
+    tempF: o.tempN ? round1(o.tempSum! / o.tempN) : null,
+    avgKw: o.kwN ? round2(o.kwSum! / o.kwN) : null,
+    peakKw: o.peakKw ?? null,
   };
   if (gap) rec.gap = true;
   return rec;
@@ -120,6 +133,7 @@ export function stepChargeLog(prev: ChargeState, p: ChargePoll): ChargeStep {
       startSoc: soc, endSoc: soc, energyKwh: null,
       baseline: lastEnergy, trusted: false,
       anyHome: false, anyAway: false, evseType: null,
+      tempSum: 0, tempN: 0, kwSum: 0, kwN: 0, peakKw: null,
     };
   }
 
@@ -142,6 +156,13 @@ export function stepChargeLog(prev: ChargeState, p: ChargePoll): ChargeStep {
       if (p.atHome === true) open.anyHome = true;
       else if (p.atHome === false) open.anyAway = true;
       if (open.evseType === null && p.evseType !== null && p.evseType !== undefined) open.evseType = p.evseType;
+      const t = num(p.tempF ?? null);
+      if (t !== null) { open.tempSum = (open.tempSum ?? 0) + t; open.tempN = (open.tempN ?? 0) + 1; }
+      const kw = num(p.powerKw ?? null);
+      if (kw !== null && kw > 0) {
+        open.kwSum = (open.kwSum ?? 0) + kw; open.kwN = (open.kwN ?? 0) + 1;
+        if (open.peakKw === null || open.peakKw === undefined || kw > open.peakKw) open.peakKw = kw;
+      }
     } else if (!p.isPluggedIn || p.ms - open.lastChargingMs >= END_DEBOUNCE_MS) {
       close(false);
     }

@@ -47,3 +47,14 @@ test('a restart reloads stale saved state: the open session closes as a gap row 
   assert.equal(saved.open, null);
   assert.equal(saved.lastEnergy, 6);
 });
+
+test('carSessionLine writes temp and power fields only when known', async () => {
+  const { carSessionLine } = await import('./rivianChargeRunner.ts');
+  const base = {
+    source: 'rivian-car' as const, startedAt: '2026-11-10T06:00:00.000Z', endedAt: '2026-11-10T08:00:00.000Z',
+    durationMin: 120, energyKwh: 15, startSoc: 40, endSoc: 50, socDelta: 10, atHome: true, evseType: 1,
+  };
+  const line = carSessionLine({ ...base, tempF: 31.5, avgKw: 1.92, peakKw: 2.1 })!;
+  assert.match(line, /temp_f=31\.5,avg_kw=1\.92,peak_kw=2\.1 /);
+  assert.doesNotMatch(carSessionLine({ ...base, tempF: null })!, /temp_f|avg_kw|peak_kw/);
+});

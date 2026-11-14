@@ -12,7 +12,8 @@ import { arrivalFloorOf, localDayNumber, needEstimate, nextUseDay, sinceHistoryS
 import { readDailyUse, readDrives } from '@/lib/driveLogStore';
 import { liveNeed, type LiveNeed } from '@/lib/needModels';
 import { localDate } from '@/lib/rivianDailyUse';
-import { KWH_PER_PCT_SEED, measuredKwhPerPct } from '@/lib/kwhPerPct';
+import { KWH_PER_PCT_SEED, kwhPerPctRows, measuredKwhPerPct } from '@/lib/kwhPerPct';
+import { readCarChargeHistory } from '@/lib/rivianChargeRunner';
 import { getShiftCalendar } from '@/lib/shiftCalendar';
 import { applyIgnored } from '@/lib/shiftChoices';
 import { readIgnored } from '@/lib/shiftChoicesStore';
@@ -187,9 +188,12 @@ export async function rivianNightPlan(
   const firstMs = allRows.reduce((m, r) => { const t = Date.parse(r.startedAt); return Number.isFinite(t) && t < m ? t : m; }, Infinity);
   const houseSince = Number.isFinite(firstMs) ? pacificFields(firstMs).date : null;
   // Measured from the Rivian's own sessions (median of the last 20 that gained
-  // >= 10%), seeded with the configured value until there are enough.
+  // >= 10%), seeded with the configured value until there are enough. Wall kWh
+  // comes from the WC log; SoC gain from the car's own charge log when the WC
+  // row has none.
   const seed = typeof v.kwhPerPct === 'number' && v.kwhPerPct > 0 ? v.kwhPerPct : KWH_PER_PCT_SEED;
-  const kwhPerPct = measuredKwhPerPct(rows, seed);
+  const carCharges = sinceHistoryStart(await readCarChargeHistory(), v.historySince);
+  const kwhPerPct = measuredKwhPerPct(kwhPerPctRows(carCharges, rows), seed);
   const est = needEstimate(rows, workDays, nowMs);
   const state = await readRivianCachedState();
   const floor = arrivalFloorOf(v);
