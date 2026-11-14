@@ -1023,7 +1023,6 @@ async function handleGet(req: Request) {
   // Drive + daily-use log (#6). Location only decides at_home and a salted
   // cell hash inside the logger; nothing here is stored or returned.
   if (rivianState) void recordRivianDrivePoll(rivianState, rivianAtHome, weather?.temp ?? null, rivianHome.fresh);
-  if (rivianState) void recordRivianChargePoll(rivianState, rivianAtHome);
 
   const teslaHome = computeAtHome('tesla', teslaState?.lat, teslaState?.lon, !!(teslaState && (teslaState as { _gpsFresh?: boolean })._gpsFresh));
   const teslaAtHome = teslaHome.atHome;
@@ -1049,6 +1048,9 @@ async function handleGet(req: Request) {
   // Sync file read, not a network call -- server/parallax-monitor.js is
   // the thing that actually talks to Rivian; this just reads its cache.
   const parallax = readRivianParallaxState();
+  // Car-reported charge log: outside temp and charging power ride along per
+  // poll so sessions can be compared by temperature and amps.
+  if (rivianState) void recordRivianChargePoll(rivianState, rivianAtHome, Date.now(), { tempF: weather?.temp ?? null, powerKw: parallax?.powerKw ?? null });
   // Parallax-first: when the websocket stream is fresh it overrides the laggy
   // classic-API charging fields (see applyParallaxToRivianState in lib/rivian.ts).
   // Power stays gated on the NEW, parallax-derived isCharging -- so powerKw is

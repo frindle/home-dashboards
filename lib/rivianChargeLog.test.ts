@@ -140,3 +140,31 @@ test('noise (under 1% and no energy) is dropped; small energy alone keeps it', (
   const kept = run([poll(0, { soc: 50, energyKwh: 0.1 }), poll(5, { soc: 50, energyKwh: 0.6 }), idle(6), idle(17)]);
   assert.equal(kept.sessions.length, 1);
 });
+
+test('temperature and power: mean temp over charging polls, mean and peak Parallax kW, stale power skipped', () => {
+  const { sessions } = run([
+    poll(0, { soc: 40, energyKwh: 0.5, atHome: true, tempF: 30, powerKw: 1.9 }),
+    poll(60, { soc: 50, energyKwh: 8, atHome: true, tempF: 28, powerKw: null }),
+    poll(120, { soc: 60, energyKwh: 16, atHome: true, tempF: 26, powerKw: 2.1 }),
+    idle(125, { tempF: 99, powerKw: 9 }),
+    idle(131),
+  ]);
+  assert.equal(sessions.length, 1);
+  assert.equal(sessions[0].tempF, 28);
+  assert.equal(sessions[0].avgKw, 2);
+  assert.equal(sessions[0].peakKw, 2.1);
+});
+
+test('state saved before temp/power existed still closes cleanly with nulls', () => {
+  const open = {
+    startMs: T0, lastChargingMs: T0, lastPollMs: T0, startSoc: 40, endSoc: 40, energyKwh: null,
+    baseline: null, trusted: false, anyHome: true, anyAway: false, evseType: null,
+  };
+  let r = stepChargeLog({ open, lastEnergy: null, lastPollMs: T0 }, poll(30, { soc: 52, energyKwh: 16 }));
+  r = stepChargeLog(r.state, idle(45, { isPluggedIn: false }));
+  assert.ok(r.session);
+  assert.equal(r.session!.tempF, null);
+  assert.equal(r.session!.avgKw, null);
+  assert.equal(r.session!.peakKw, null);
+  assert.equal(r.session!.socDelta, 12);
+});

@@ -24,6 +24,8 @@ export interface ComparePair {
   ratio: number | null;          // carKwh / wcKwh
   wcKwhPerSocPct: number | null;
   carKwhPerSocPct: number | null;
+  tempF: number | null;          // car log: mean outside temp while charging
+  avgKw: number | null;          // car log: mean charging power
 }
 
 export interface CompareSummary {
@@ -102,6 +104,8 @@ export function compareSources(carAll: CarChargeRecord[], wc: WcRow[]): CompareR
       ratio: carKwh !== null && wcKwh > 0 ? r3(carKwh / wcKwh) : null,
       wcKwhPerSocPct: per(wcKwh, socDelta),
       carKwhPerSocPct: per(carKwh, socDelta),
+      tempF: c.tempF ?? null,
+      avgKw: c.avgKw ?? null,
     });
   });
 
