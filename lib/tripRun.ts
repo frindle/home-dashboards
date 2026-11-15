@@ -51,6 +51,7 @@ export interface DayView {
   highF: number | null;
   manual: ManualNeed | null;              // the day's need typed on /trips: replaces the trip estimate when higher
   byMs: number | null;                    // when the car must be ready (the plan's departure, else a default for a typed need)
+  tooFar: { miles: number; needPct: number } | null;  // needs more than a full charge covers safely: left out of the plan
 }
 
 export interface TripLayer {
@@ -131,6 +132,7 @@ export async function computeTrips(run: RivianPlanRun, nowMs: number, opts: { re
     let plan: TripDay | null = null;
     let adj: Adjusted | null = null;
     let highF: number | null = null;
+    let tooFar: DayView['tooFar'] = null;
     if (dayEvents.length && !isAway) {
       plan = await planTripDay({
         day, localMs: (h) => dayTimeMs(day, h), home: homePt, homeRadiusM: Math.max(100, home.radiusMeters ?? 150),
@@ -139,6 +141,12 @@ export async function computeTrips(run: RivianPlanRun, nowMs: number, opts: { re
       if (plan && !plan.unroutable && plan.miles > 0) {
         highF = await highFor(day, nowMs);
         adj = adjustForTrip({ isWork, baseNeedPct, miles: plan.miles, extraMiles: plan.extraMiles, highF });
+        // Further than the car can safely drive on a full charge (Penn 11-15): left out of
+        // the plan, with a push. A need typed for the day still counts.
+        if (adj.overRange) {
+          tooFar = { miles: plan.miles, needPct: adj.needPct };
+          adj = null;
+        }
       }
     }
     // A need typed on /trips wins over the trip estimate (and covers a place
@@ -154,7 +162,7 @@ export async function computeTrips(run: RivianPlanRun, nowMs: number, opts: { re
     const byMs = plan?.departMs ?? (manual
       ? (shift ? shift.startMs - DEPART_BUFFER_MIN * 60_000 : timed.length ? Math.min(...timed) - 3_600_000 : dayTimeMs(day, ALL_DAY_START_HOUR))
       : null);
-    days.push({ day, dateLabel: new Date(dayTimeMs(day, 12)).toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' }), isWork, away: isAway, events: views, plan, adj, baseNeedPct, highF, manual, byMs });
+    days.push({ day, dateLabel: new Date(dayTimeMs(day, 12)).toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' }), isWork, away: isAway, events: views, plan, adj, baseNeedPct, highF, manual, byMs, tooFar });
   }
 
   // The summaries behind pushes, and the soonest raising trip as the override.
@@ -179,9 +187,9 @@ export async function computeTrips(run: RivianPlanRun, nowMs: number, opts: { re
       }
     }
     summaries.push({
-      day: d.day, dateLabel: d.dateLabel, miles: d.plan?.miles ?? 0, needPct: d.adj?.needPct ?? 0, targetPct: d.adj?.targetPct ?? 0,
+      day: d.day, dateLabel: d.dateLabel, miles: d.plan?.miles ?? 0, needPct: d.adj?.needPct ?? d.tooFar?.needPct ?? 0, targetPct: d.adj?.targetPct ?? 0,
       byMs: d.byMs, raise: raise && !!ov, multiDay: d.plan?.multiDay ?? false, unplaced: d.plan?.unplaced.length ?? 0,
-      unroutable: !!d.plan?.unroutable, manual: !!d.manual,
+      unroutable: !!d.plan?.unroutable, manual: !!d.manual, tooFar: !!d.tooFar && !d.manual,
       overlaps: d.plan?.overlaps.length ?? 0, limitPct: state?.chargeLimit ?? null, reachable,
     });
   }

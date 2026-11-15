@@ -41,6 +41,21 @@ test('plan table: mpp by high; lunch 4 mi -> 10%; 140 mi at 80F -> need 56, 81% 
   assert.equal(far.raise, true);
 });
 
+test('over range: more than a full charge covers (floor + need > 100) is flagged; a typed need never is', () => {
+  // 80F: 2.88 mi per %. 191 mi -> need 75 -> 100% exactly: still in range. 193 mi -> need 76: over.
+  const edge = adjustForTrip({ isWork: false, baseNeedPct: 10, miles: 191, extraMiles: 0, highF: 80 });
+  assert.deepEqual([edge.needPct, edge.targetPct, edge.overRange], [75, 100, false]);
+  const over = adjustForTrip({ isWork: false, baseNeedPct: 10, miles: 193, extraMiles: 0, highF: 80 });
+  assert.deepEqual([over.needPct, over.targetPct, over.overRange], [76, 100, true]);
+  assert.equal(adjustForTrip({ isWork: false, baseNeedPct: 10, miles: 140, extraMiles: 0, highF: 80 }).overRange, false);
+  // Cold days cover fewer miles: 140 mi at 30F is over.
+  assert.equal(adjustForTrip({ isWork: false, baseNeedPct: 10, miles: 140, extraMiles: 0, highF: 30 }).overRange, true);
+  // Work day: the day's base plus the extra miles.
+  assert.equal(adjustForTrip({ isWork: true, baseNeedPct: 20, miles: 200, extraMiles: 150, highF: 80 }).overRange, true);
+  assert.equal(adjustForTrip({ isWork: true, baseNeedPct: 20, miles: 60, extraMiles: 28.8, highF: 80 }).overRange, false);
+  assert.equal(manualAdjust({ baseNeedPct: 10, pct: 95 }).overRange, false);
+});
+
 test('work day: raise only, base + extra', () => {
   const none = adjustForTrip({ isWork: true, baseNeedPct: 20, miles: 40, extraMiles: 0, highF: 80 });
   assert.deepEqual([none.needPct, none.raise, none.targetPct], [20, false, 45]);
@@ -145,7 +160,7 @@ test('an unroutable leg marks the day, no miles invented', async () => {
 });
 
 test('manualAdjust: the typed day need with the trip margin and floor; raise only above the base', () => {
-  assert.deepEqual(manualAdjust({ baseNeedPct: 16, pct: 40 }), { tripPct: 40, needPct: 44, targetPct: 69, raise: true });
+  assert.deepEqual(manualAdjust({ baseNeedPct: 16, pct: 40 }), { tripPct: 40, needPct: 44, targetPct: 69, raise: true, overRange: false });
   const low = manualAdjust({ baseNeedPct: 16, pct: 10 });
   assert.equal(low.raise, false);
   assert.equal(low.needPct, 16);

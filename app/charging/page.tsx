@@ -17,13 +17,45 @@ const pct = (n: number | null) => (n === null ? '?' : `${Math.round(n)}%`);
 const signed = (n: number | null) => (n === null ? 'n/a' : `${n > 0 ? '+' : ''}${Math.round(n)}%`);
 const clock = (ms: number) => new Date(ms).toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' });
 
+// The manual off switch for forecast charging (Penn 11-15). Off: the car fills to its own charge
+// limit each night at the lowest amps that gets there; typed needs, trips and the forecast calendar
+// are not used until it is back on.
+function ForecastSwitchCard({ v }: { v: ChargeCalendarView }) {
+  const h = v.header;
+  const Choice = ({ value, label }: { value: string; label: string }) => (
+    <form method="post" action="/api/rivian/forecast">
+      <input type="hidden" name="choice" value={value} />
+      <button type="submit">{label}</button>
+    </form>
+  );
+  return (
+    <section className="cc-card" aria-label="Forecast charging">
+      <h2>Forecast charging: {h.forecastOff ? 'Off' : 'On'}</h2>
+      {h.forecastOff ? <>
+        <p className="cc-note">{h.offUntilMs ? `Back on at ${clock(h.offUntilMs)}.` : 'Off until you turn it back on.'} Each night the car charges to its own limit ({pct(h.limitPct ?? 100)}) by the end of the charge window, at the lowest amps that gets there. Typed needs, calendar trips and the EV Charge Forecast calendar are not used while it is off. The nights below show what the forecast plan would do.</p>
+        {h.fill && <p className="mono">Tonight: {h.fill.plugIn === false ? 'already at the limit' : `${h.fill.plugIn === null ? '' : 'Plug in, '}${h.fill.amps}A to ${h.fill.targetPct}% by ${clock(h.fill.byMs)}`}</p>}
+        {h.fill && !h.fill.feasible && <p className="cc-warn">The window is too short to reach the limit by then.</p>}
+        <div className="cc-switch"><Choice value="on" label="Turn forecast charging on" /></div>
+      </> : <>
+        <p className="cc-note">The plan sets each night from the forecast: daily use, calendar trips and typed needs. Turn it off to fill the car to its charge limit every night instead, for example before a trip further than a full charge covers (those trips are left out of the plan).</p>
+        <div className="cc-switch">
+          <Choice value="off" label="Off until I turn it on" />
+          <Choice value="1" label="Off for 1 day" />
+          <Choice value="3" label="Off for 3 days" />
+          <Choice value="7" label="Off for 7 days" />
+        </div>
+      </>}
+    </section>
+  );
+}
+
 function Header({ v }: { v: ChargeCalendarView }) {
   const h = v.header;
   return (
     <section className="cc-head" aria-label="Right now">
       <div className="cc-stat"><span className="cc-k">Car</span><span className="cc-v mono">{pct(h.socPct)}{h.limitPct !== null ? ` of ${h.limitPct}% limit` : ''}</span><span className="cc-s">{h.plugged === null ? 'plug state unknown' : h.plugged ? (h.charging ? 'plugged in, charging' : 'plugged in') : 'not plugged in'}</span></div>
       <div className="cc-stat">
-        <span className="cc-k">Tonight{h.serveLabel ? `, for ${h.serveLabel}` : ''}</span>
+        <span className="cc-k">Tonight{h.serveLabel ? `, for ${h.serveLabel}` : ''}{h.forecastOff ? ' (forecast plan, not in use)' : ''}</span>
         {v.planKnown ? <>
           <span className="cc-v mono">{h.plugIn === null ? 'plug-in unknown' : h.plugIn ? `Plug in${h.amps ? `, ${h.amps}A` : ''}` : 'No plug-in needed'}</span>
           <span className="cc-s mono">{h.windowLabel ? `${h.windowLabel} (${h.windowHours?.toFixed(1)}h)` : 'no charge window'}{h.addPct !== null && h.plugIn ? ` · +${Math.round(h.addPct)}% · ${h.kwh?.toFixed(1)} kWh` : ''}</span>
@@ -101,6 +133,7 @@ function Cell({ d, v }: { d: CalDay; v: ChargeCalendarView }) {
         {d.shiftLabel && <p className="cc-note mono">{d.shiftLabel}</p>}
         <p className="cc-use mono"><strong>{d.away ? 'Away' : d.miles !== null ? `${d.miles} mi` : '?'}</strong>{!d.away && d.usePct !== null ? ` · ${Math.round(d.usePct)}%` : ''}</p>
         <p className="cc-note">{d.source}{d.highF !== null ? ` · ${Math.round(d.highF)}°F` : ''}</p>
+        {d.tooFarMiles !== null && <p className="cc-warn">Trip about {d.tooFarMiles} mi is beyond a full charge: not planned.</p>}
         <Need d={d} />
         <Night d={d} v={v} />
       </>}
@@ -139,6 +172,7 @@ export default async function ChargingPage() {
         {!v && <p className="cc-warn">The plan could not be read right now.</p>}
         {v && <>
           <Header v={v} />
+          <ForecastSwitchCard v={v} />
           {!v.tripsOn && <p className="cc-note">Trips are off (no personal calendar set), so days use the model only.</p>}
           {v.tripsOn && !v.tripsRead && <p className="cc-warn">The personal calendar could not be read, so trips are not counted.</p>}
           <div className="cc-grid-wrap">

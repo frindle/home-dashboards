@@ -18,6 +18,7 @@ export interface TripSummary {
   unplaced: number;            // events that could not be placed
   unroutable: boolean;         // a leg could not be routed
   manual: boolean;             // the day's need was typed on /trips
+  tooFar: boolean;             // more than a full charge covers safely: left out of the plan
   overlaps: number;            // events overlapping the shift, still open
   limitPct: number | null;     // the car's charge limit
   reachable: boolean | null;   // overridePlan feasible, when it could be worked out
@@ -78,6 +79,14 @@ export function tripAlerts(c: TripAlertCtx): Alert[] {
       const tonight = t.day === c.serveDay;
       if (daytime || (tonight && c.slot === 'update')) add({ key: `${kind}:${t.day}`, title: T, priority: 0, link: fl, message: msg });
       if (tonight && min >= 23 * 60) add({ key: `${kind}-2300:${c.today}:${t.day}`, title: T, priority: 1, link: fl, message: `Still open at 23:00. ${msg}` });
+    }
+    // Further than a full charge covers safely: not planned (Penn 11-15). Same timing as above.
+    if (t.tooFar) {
+      const cl = c.dashboardUrl ? { url: `${c.dashboardUrl.replace(/\/+$/, '')}/charging`, urlTitle: 'Forecast charging' } : undefined;
+      if (daytime || (t.day === c.serveDay && c.slot === 'update')) {
+        add({ key: `trip-too-far:${t.day}`, title: T, priority: 0, link: cl,
+          message: `The trip on ${t.dateLabel} is about ${Math.round(t.miles)} mi, further than a full charge covers safely, so it is left out of the charge plan. To fill up for it, raise the charge limit in the Rivian app and turn off forecast charging.` });
+      }
     }
     if (t.overlaps > 0) {
       const ol = link(c.dashboardUrl, t.day, 'Choose');

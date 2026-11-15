@@ -22,11 +22,12 @@ export interface PlanStore {
   planned: Record<string, { pct: number; kwh: number; aimKw: number | null; houseKw: number | null; roomKw: number | null }>;
   scoreDay: number | null;                            // local day the forecast-vs-actual scorer last ran
   driftWeek: string | null;                           // ISO week the drift push last went out
+  switchKey: string | null;                           // forecast switch state last run (lib/forecastSwitch.ts switchKey)
 }
 
 export const emptyStore = (): PlanStore => ({
   sent: {}, done: {}, target: null, lateSeen: null, replanned: null, forecast: null, conflictOpenDay: null,
-  serveRoom: null, holdRejectedServe: null, planned: {}, scoreDay: null, driftWeek: null,
+  serveRoom: null, holdRejectedServe: null, planned: {}, scoreDay: null, driftWeek: null, switchKey: null,
 });
 
 function storePath(): string {

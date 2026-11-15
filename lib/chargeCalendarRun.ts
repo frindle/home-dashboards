@@ -3,13 +3,17 @@
 // through lib/chargeCalendar.ts for the coming nights. Both consumers get the same view.
 // Never throws on missing parts: no car state, no calendars or no forecast just leave blanks.
 import { readConfig } from '@/lib/config';
+import { overridePlan } from '@/lib/chargeOverride';
+import { fillTarget, forecastOff, readForecastSwitch } from '@/lib/forecastSwitch';
+import { packKwhFor, RIVIAN_PACK_KWH_DEFAULT } from '@/lib/packKwh';
+import { EV_WINDOW } from '@/lib/rivianSchedule';
 import { arrivalFloorOf, dayTimeMs, localDayNumber, nextUseDay, topUpLimitFor } from '@/lib/chargePlan';
 import { CHARGE_CAL_DAYS, projectNights, type CalDayIn, type CalNight, type UseSource } from '@/lib/chargeCalendar';
 import { readDailyUse } from '@/lib/driveLogStore';
 import { personalCalendarOn } from '@/lib/personalCalendar';
 import { readPlanStore } from '@/lib/planAlertStore';
 import { localDate } from '@/lib/rivianDailyUse';
-import { cachedForecastTemps, rivianNightPlan, RIVIAN_MAX_AMPS, RIVIAN_MIN_AMPS, type RivianPlanRun } from '@/lib/rivianNightPlan';
+import { cachedForecastTemps, dailyNeedKwhOf, rivianNightPlan, RIVIAN_MAX_AMPS, RIVIAN_MIN_AMPS, type RivianPlanRun } from '@/lib/rivianNightPlan';
 import { readOverride } from '@/lib/rivianOverrideStore';
 import type { ForecastDayIn } from '@/lib/forecastCalEvents';
 import { highOnDay, type ForecastTemp } from '@/lib/rivianPlan';
@@ -34,6 +38,7 @@ export interface CalDay {
   highF: number | null;
   typed: ManualNeed | null;
   typedBelow: boolean;          // a typed need under the forecast: ignored, the plan only goes up
+  tooFarMiles: number | null;   // a trip beyond a full charge: left out of the plan (the day uses the model)
   actual: { usedPct: number | null; miles: number } | null;   // past days, from the daily-use log
   night: CalNight | null;       // the night before this day
 }
@@ -54,6 +59,9 @@ export interface CalHeader {
   shortfall: boolean;
   controlOn: boolean;
   override: { targetPct: number; byMs: number; auto: boolean } | null;
+  forecastOff: boolean;         // forecast charging switched off: the car fills to its limit each night
+  offUntilMs: number | null;    // turns itself back on then (null: until turned on by hand)
+  fill: { targetPct: number; byMs: number; amps: number; feasible: boolean; plugIn: boolean | null } | null;
 }
 
 export interface ChargeCalendarView {
@@ -95,7 +103,7 @@ export async function chargeCalendarView(nowMs: number): Promise<ChargeCalendarV
   const lastDay = today + CHARGE_CAL_DAYS - 1;
 
   // One entry per day from today: its kind, its expected use and where that came from.
-  const info = new Map<number, CalDayIn & { miles: number | null; typed: ManualNeed | null; typedBelow: boolean }>();
+  const info = new Map<number, CalDayIn & { miles: number | null; typed: ManualNeed | null; typedBelow: boolean; tooFarMiles: number | null }>();
   for (let day = today; day <= lastDay; day++) {
     const t = trips.get(day);
     const isWork = !!run.workDays?.has(day) || run.shifts.some((s) => s.day === day);
@@ -104,6 +112,7 @@ export async function chargeCalendarView(nowMs: number): Promise<ChargeCalendarV
     const typed = needs[String(day)] ?? null;
     // The forecast first (trip, else the model), then a typed need over it: it only raises.
     let usePct: number, source: UseSource, miles: number | null;
+    const tooFarMiles = t?.tooFar ? Math.round(t.tooFar.miles) : null;
     if (away) {
       usePct = 0; source = 'trip'; miles = null;
     } else if (t?.plan && t.adj && !t.plan.unroutable && t.plan.miles > 0) {
@@ -125,7 +134,7 @@ export async function chargeCalendarView(nowMs: number): Promise<ChargeCalendarV
         miles = typed.unit === 'mi' ? typed.value : milesForPct(tp, highF);
       } else typedBelow = true;
     }
-    info.set(day, { day, isWork, away, usePct, useSource: source, highF, tripMiles: t?.plan?.miles ?? null, miles, typed, typedBelow });
+    info.set(day, { day, isWork, away, usePct, useSource: source, highF, tripMiles: t?.plan?.miles ?? null, miles, typed, typedBelow, tooFarMiles });
   }
 
   // Nights from the one the plan serves to the end of the calendar.
@@ -159,6 +168,7 @@ export async function chargeCalendarView(nowMs: number): Promise<ChargeCalendarV
       weekday: weekdayOf(day), inRange, past: day < today, today: day === today,
       isWork: i ? i.isWork : shifts.length > 0, away: !!i?.away, shiftLabel,
       usePct: i?.usePct ?? null, miles: i?.miles ?? null, source: i?.useSource ?? null, highF: i?.highF ?? null, typed: i?.typed ?? null, typedBelow: i?.typedBelow ?? false,
+      tooFarMiles: i?.tooFarMiles ?? null,
       actual: act && !act.unknown ? { usedPct: act.used_pct, miles: act.miles } : null,
       night: nights.get(day) ?? null,
     };
@@ -169,7 +179,21 @@ export async function chargeCalendarView(nowMs: number): Promise<ChargeCalendarV
   const plan = built?.result.plan ?? null;
   const n0 = nights.get(serveDay) ?? null;
   const manual = await readOverride(nowMs).catch(() => null);
-  const ov = manual ?? layer?.override ?? null;
+  // Forecast charging off: the car fills to its limit (lib/rivianChargeControl.ts does the same).
+  const sw = await readForecastSwitch();
+  const off = forecastOff(sw, nowMs);
+  const ft = off ? fillTarget(run.state?.chargeLimit, nowMs, EV_WINDOW) : null;
+  const fp = ft ? overridePlan({
+    override: ft, nowMs, socPct: run.state?.chargePercent, limitPct: run.state?.chargeLimit,
+    packKwh: packKwhFor(run.state?.batteryCapacityKwh, readConfig().vehicles.rivian.packKwh, RIVIAN_PACK_KWH_DEFAULT),
+    dailyKwh: dailyNeedKwhOf(run) ?? 0, window: EV_WINDOW, minAmps: RIVIAN_MIN_AMPS, maxAmps: RIVIAN_MAX_AMPS,
+  }) : null;
+  const soc = run.state?.chargePercent;
+  const fill = ft && fp ? {
+    targetPct: ft.targetPct, byMs: ft.byMs, amps: fp.amps, feasible: fp.feasible,
+    plugIn: typeof soc === 'number' && Number.isFinite(soc) ? ft.targetPct > soc + 0.5 : null,
+  } : null;
+  const ov = manual ?? (off ? null : layer?.override ?? null);
   const w = built?.result.window ?? null;
   const header: CalHeader = {
     socPct: run.state?.chargePercent ?? null, limitPct: run.state?.chargeLimit ?? null,
@@ -181,6 +205,7 @@ export async function chargeCalendarView(nowMs: number): Promise<ChargeCalendarV
     raiseLimitTo: plan?.raiseLimitTo ?? null, shortfall: plan?.shortfall ?? false,
     controlOn: process.env.RIVIAN_SCHEDULE_CONTROL === '1',
     override: ov ? { targetPct: ov.targetPct, byMs: ov.byMs, auto: !manual } : null,
+    forecastOff: off, offUntilMs: off ? sw.untilMs : null, fill,
   };
   return {
     nowMs, header, weeks, floorPct: floor.arrivalFloorPct, limitPct,
