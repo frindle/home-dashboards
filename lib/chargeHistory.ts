@@ -8,6 +8,7 @@ import { readFile, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { readConfig } from './config';
 import { mirrorSessionToInflux, vehicleIdResolver } from './chargeSessionInflux';
+import { dedupeChargeRows } from './chargeRowDedupe';
 
 export interface ChargeHistoryRow {
   side: 'LEFT' | 'RIGHT';
@@ -38,7 +39,7 @@ export async function readChargeHistory(): Promise<ChargeHistoryRow[]> {
     try { out.push(JSON.parse(line) as ChargeHistoryRow); }
     catch { /* skip malformed */ }
   }
-  return out;
+  return dedupeChargeRows(out);
 }
 
 export async function appendChargeHistory(row: ChargeHistoryRow): Promise<void> {

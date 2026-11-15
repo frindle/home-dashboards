@@ -568,7 +568,19 @@ function localDateStr(): string {
   return new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in local time
 }
 
-async function updateSessionKwh(
+// Serialized: the background self-poll (instrumentation.ts) and an open
+// dashboard tab overlap, and two calls that both read lastInUse=true each
+// logged the ended session (duplicate charge-history row 2026-11-14).
+let sessionChain: Promise<unknown> = Promise.resolve();
+function updateSessionKwh(
+  ...args: Parameters<typeof updateSessionKwhUnserialized>
+): ReturnType<typeof updateSessionKwhUnserialized> {
+  const run = sessionChain.then(() => updateSessionKwhUnserialized(...args));
+  sessionChain = run.catch(() => undefined);
+  return run;
+}
+
+async function updateSessionKwhUnserialized(
   leftPowerW: number, leftInUse: boolean,
   rightPowerW: number, rightInUse: boolean,
   leftVehicleName: string, rightVehicleName: string,
