@@ -6,6 +6,8 @@
 // one-off charge override.
 // Same access model as the rest of the app: no login, LAN only. The page shows
 // event places; pushes, logs and Influx never do.
+import Link from 'next/link';
+import { forecastOff, readForecastSwitch } from '@/lib/forecastSwitch';
 import { personalCalendarOn } from '@/lib/personalCalendar';
 import { rivianNightPlan } from '@/lib/rivianNightPlan';
 import { computeTrips, type DayView } from '@/lib/tripRun';
@@ -65,6 +67,7 @@ function Day({ d, focus }: { d: DayView; focus: boolean }) {
           {a.raise && d.byMs ? <> · <strong>{Math.round(a.targetPct)}% by {time(d.byMs)}</strong></> : <> · normal plan covers it</>}
         </p>
       )}
+      {d.tooFar && !d.manual && <p className="trips-warn">About {Math.round(d.tooFar.miles)} mi, needing {Math.round(d.tooFar.needPct)}%: further than a full charge covers safely, so it is left out of the plan. To fill up for it, raise the charge limit in the Rivian app and turn off forecast charging on <Link href="/charging">Charging</Link>.</p>}
       {p?.unroutable && !d.manual && <p className="trips-warn">A route could not be worked out (map service unreachable or no road route). Set what the day needs below.</p>}
       {p?.needsWork && <p className="trips-warn">Work location unknown, so events on this work day are not added. Pick it below.</p>}
       <ul className="trips-events">
@@ -116,6 +119,7 @@ export default async function TripsPage({ searchParams }: { searchParams: Promis
   const focusDay = Number.isInteger(Number(q.day)) && Number(q.day) > 0 ? Number(q.day) : null;
   const now = Date.now();
   const on = personalCalendarOn();
+  const off = forecastOff(await readForecastSwitch(), now);
   const layer = on ? await computeTrips(await rivianNightPlan(now), now).catch(() => null) : null;
   const shown = layer?.days.filter((d) => d.events.length > 0 || d.manual) ?? [];
   const others = layer?.days.filter((d) => !d.events.length && !d.manual).map((d) => ({ day: d.day, label: d.dateLabel })) ?? [];
@@ -123,6 +127,7 @@ export default async function TripsPage({ searchParams }: { searchParams: Promis
     <div className="trips-page">
       <main className="trips">
         <h1>Trips, next 7 days</h1>
+        {off && <p className="trips-warn">Forecast charging is off, so trips and typed needs are not used: the car fills to its charge limit each night. Turn it back on at <Link href="/charging">Charging</Link>.</p>}
         {!on && <p className="trips-note">The personal calendar is not connected. Set PERSONAL_CAL_URL to turn trip planning on.</p>}
         {on && !layer && <p className="trips-warn">The personal calendar could not be read, or the home location is not set.</p>}
         {layer && !shown.length && <p className="trips-note">No events with a location in the next 7 days.</p>}

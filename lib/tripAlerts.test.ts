@@ -7,7 +7,7 @@ import { tripPlanLine } from './tripInflux.ts';
 const TODAY = Math.round(Date.UTC(2026, 10, 17) / 86_400_000);
 const day = (x: Partial<TripSummary> = {}): TripSummary => ({
   day: TODAY + 1, dateLabel: 'Wed 11/18', miles: 140, needPct: 56, targetPct: 81, byMs: new Date(2026, 10, 18, 7, 30).getTime(),
-  raise: true, multiDay: false, unplaced: 0, unroutable: false, manual: false, overlaps: 0, limitPct: 70, reachable: true, ...x,
+  raise: true, multiDay: false, unplaced: 0, unroutable: false, manual: false, tooFar: false, overlaps: 0, limitPct: 70, reachable: true, ...x,
 });
 const ctx = (d: TripSummary[], x: Partial<TripAlertCtx> = {}): TripAlertCtx => ({
   nowMs: new Date(2026, 10, 17, 10, 0).getTime(), today: TODAY, serveDay: TODAY, sent: new Set(), days: d, openBefore: [],
@@ -76,4 +76,17 @@ test('unplaced / unroutable: tonight\'s day pushes at the evening update and aga
 test('a typed need that raises the plan: no "trip planned" push, but the limit and unreachable nudges still go', () => {
   const a = tripAlerts(ctx([day({ manual: true, reachable: false })]));
   assert.deepEqual(a.map((x) => x.key.split(':')[0]), ['trip-limit', 'trip-unreachable']);
+});
+
+test('too far: one push, daytime or tonight at the update slot, linking /charging; none once a need is typed', () => {
+  const far = day({ raise: false, tooFar: true, miles: 260, needPct: 0, targetPct: 0 });
+  const a = tripAlerts(ctx([far]));
+  assert.deepEqual(a.map((x) => x.key), [`trip-too-far:${TODAY + 1}`]);
+  assert.match(a[0].message, /about 260 mi, further than a full charge covers safely/);
+  assert.equal(a[0].link?.url, 'http://dash.lan:3000/charging');
+  assert.equal(tripAlerts(ctx([far], { sent: new Set(a.map((x) => x.key)) })).length, 0);
+  const late = new Date(2026, 10, 17, 23, 10).getTime();
+  assert.equal(tripAlerts(ctx([far], { nowMs: late })).length, 0);
+  const tonight = day({ day: TODAY, raise: false, tooFar: true, miles: 260 });
+  assert.equal(tripAlerts(ctx([tonight], { nowMs: late, slot: 'update' })).length, 1);
 });

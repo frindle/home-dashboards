@@ -225,6 +225,10 @@ export interface Adjusted {
   needPct: number;          // the day's need after the trip
   targetPct: number;        // "N% by departure"
   raise: boolean;           // the trip asks for more than the normal plan
+  // Further than the car can safely drive on a full charge (Penn 11-15): the target before the
+  // 100% cap (arrival floor + need with the margin) is over 100%. Such a trip needs a charge on the
+  // way, so it is left out of the plan; the caller drops it and says so.
+  overRange: boolean;
 }
 
 // The trip layer over a day's base need. Days off: need = max(normal, trip);
@@ -235,11 +239,11 @@ export function adjustForTrip(p: { isWork: boolean; baseNeedPct: number; miles: 
   if (p.isWork) {
     const delta = Math.round(TRIP_MARGIN * (p.extraMiles / mpp));
     const need = base + delta;
-    return { tripPct: p.extraMiles / mpp, needPct: need, targetPct: Math.min(100, ARRIVAL_FLOOR_PCT + need), raise: delta > 0 };
+    return { tripPct: p.extraMiles / mpp, needPct: need, targetPct: Math.min(100, ARRIVAL_FLOOR_PCT + need), raise: delta > 0, overRange: ARRIVAL_FLOOR_PCT + need > 100 };
   }
   const tripPct = p.miles > 0 ? p.miles / mpp + PARKED_PCT : 0;
   const tripNeed = Math.round(TRIP_MARGIN * tripPct);
-  return { tripPct, needPct: Math.max(base, tripNeed), targetPct: Math.min(100, ARRIVAL_FLOOR_PCT + tripNeed), raise: tripNeed > base };
+  return { tripPct, needPct: Math.max(base, tripNeed), targetPct: Math.min(100, ARRIVAL_FLOOR_PCT + tripNeed), raise: tripNeed > base, overRange: ARRIVAL_FLOOR_PCT + tripNeed > 100 };
 }
 
 // A need typed on /trips for a day (a place that cannot be found, a route that
@@ -249,7 +253,8 @@ export function adjustForTrip(p: { isWork: boolean; baseNeedPct: number; miles: 
 export function manualAdjust(p: { baseNeedPct: number; pct: number }): Adjusted {
   const base = Math.max(0, p.baseNeedPct);
   const tripNeed = Math.round(TRIP_MARGIN * Math.max(0, p.pct));
-  return { tripPct: p.pct, needPct: Math.max(base, tripNeed), targetPct: Math.min(100, ARRIVAL_FLOOR_PCT + tripNeed), raise: tripNeed > base };
+  // Never over range: a typed need is Penn's own call, so it stays in the plan (capped at 100%).
+  return { tripPct: p.pct, needPct: Math.max(base, tripNeed), targetPct: Math.min(100, ARRIVAL_FLOOR_PCT + tripNeed), raise: tripNeed > base, overRange: false };
 }
 
 // % of battery for a typed mileage on a day with high highF (parked drain added).
