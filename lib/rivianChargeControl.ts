@@ -152,6 +152,14 @@ async function runOnce(now: number, arrived = false): Promise<RivianChargeStatus
     if (run.calendar) void recordShiftDays(run.calendar.workDays, today, process.env, undefined, { shifts: run.calendar.shifts, timeOffDays: run.timeOffDays });
     const built = run.built;
     const plan = built?.result.plan ?? null;
+    // Penn 11-17: check SoC minus the driving left today before any push or write.
+    // The arrival push fires mid-drive, so the drive in progress counts as driven.
+    if ((slot !== null || arrived) && built) {
+      const f = (x: number | null | undefined) => (typeof x === 'number' ? Math.round(x * 10) / 10 : 'n/a');
+      console.log(`[rivian-charge] plan soc: real ${f(run.state?.chargePercent)}, driven today ${f(built.drivenPct)}, `
+        + `expected ${f(built.todayUsePct)}, left ${f(built.leftPct)} -> plan from ${f(built.socUsed)}, amps ${plan?.amps ?? 'n/a'}`
+        + ` (${arrived ? 'arrival' : slot}${run.midDrive ? ', mid-drive' : ''}${run.openDrive ? ', open drive' : ''})`);
+    }
     status.need = run.est;
     status.need7 = run.need7;
     status.dailyNeedKwh = dailyNeedKwhOf(run);

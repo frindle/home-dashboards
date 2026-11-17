@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { decideAmps, lateStartStep, writeSlot } from './rivianSchedule.ts';
 import { arrivalPlugAlert, planAlerts, plugDecision, pruneSent, type AlertCtx, type ArrivalCtx } from './planAlerts.ts';
 import { applyIgnored, validChoice } from './shiftChoices.ts';
-import { buildRivianPlan, driveTimeTemps, forecastHighFor, forecastTempsFrom, socForPlan } from './rivianPlan.ts';
+import { buildRivianPlan, drivenTodayPct, driveTimeTemps, forecastHighFor, forecastTempsFrom, socForPlan } from './rivianPlan.ts';
 import { dayTimeMs, localDayNumber, type Shift } from './chargePlan.ts';
 
 const at = (s: string) => Date.parse(s);
@@ -129,6 +129,77 @@ test('socForPlan: forecast takes the day off, update reads plugged SoC, unplugge
   assert.equal(socForPlan(at('2026-11-12T23:00:00-08:00'), 60, false, 15, 1.1), 60 - 8.25);
   assert.equal(socForPlan(at('2026-11-13T02:00:00-08:00'), 40, true, 15, 1.1), 40);
   assert.equal(socForPlan(at('2026-11-12T23:00:00-08:00'), null, true, 15, 1.1), null);
+});
+
+test('socForPlan: only the driving left today comes off; driven 0 is the old rule', () => {
+  // 22:58, use 15, driven 10: 5 left x 1.1.
+  assert.equal(socForPlan(at('2026-11-12T22:58:00-08:00'), 40, false, 15, 1.1, 10), 40 - 5.5);
+  // Driven past the expected use: nothing left, the real SoC.
+  assert.equal(socForPlan(at('2026-11-12T22:58:00-08:00'), 40, false, 15, 1.1, 22), 40);
+  assert.equal(socForPlan(at('2026-11-12T22:58:00-08:00'), 40, false, 15, 1.1, 0), 40 - 16.5);
+  // 23:00 unplugged: what is left, at most half the day.
+  assert.equal(socForPlan(at('2026-11-12T23:10:00-08:00'), 40, false, 15, 1.1, 10), 40 - 5.5);
+  assert.equal(socForPlan(at('2026-11-12T23:10:00-08:00'), 40, false, 15, 1.1, 2), 40 - 8.25);
+  assert.equal(socForPlan(at('2026-11-12T23:10:00-08:00'), 40, true, 15, 1.1, 2), 40);
+  // Inside the window: the real SoC whatever was driven.
+  assert.equal(socForPlan(at('2026-11-13T02:00:00-08:00'), 40, false, 15, 1.1, 0), 40);
+});
+
+test('drivenTodayPct: logged drives today, the drive in progress mid-drive, the drop since a charge today', () => {
+  const now = at('2026-11-16T22:58:00-08:00');
+  const drive = (start: string, s: number | null, e: number | null) => ({ start, start_soc: s, end_soc: e });
+  const base = { nowMs: now, socNow: 40, outOfPark: false, drives: [], open: null, lastCharge: null };
+  // Nothing known: 0 (the old rule).
+  assert.equal(drivenTodayPct(base), 0);
+  // Today's drives count; yesterday's and ones without a SoC do not.
+  const drives = [
+    drive('2026-11-16T11:45:00-08:00', 45.9, 37),
+    drive('2026-11-15T18:00:00-08:00', 60, 50),
+    drive('2026-11-16T14:00:00-08:00', null, 36),
+  ];
+  assert.ok(Math.abs(drivenTodayPct({ ...base, drives }) - 8.9) < 1e-9);
+  // Mid-drive (out of P): the drive in progress, from its saved start (survives a restart).
+  const open = { startMs: at('2026-11-16T22:36:00-08:00'), startSoc: 47 };
+  assert.ok(Math.abs(drivenTodayPct({ ...base, drives, open, outOfPark: true }) - (8.9 + 7)) < 1e-9);
+  // Parked: the open record is not a drive in progress, so it is ignored.
+  assert.ok(Math.abs(drivenTodayPct({ ...base, drives, open, outOfPark: false }) - 8.9) < 1e-9);
+  // A drive in progress that started yesterday is not today's driving.
+  assert.equal(drivenTodayPct({ ...base, open: { startMs: at('2026-11-15T23:50:00-08:00'), startSoc: 60 }, outOfPark: true }), 0);
+  // Restart lost the log: the drop since this morning's charge still counts, mid-drive too.
+  const lastCharge = { endedAt: '2026-11-16T07:40:00-08:00', endSoc: 80 };
+  assert.equal(drivenTodayPct({ ...base, outOfPark: true, lastCharge }), 40);
+  // The larger of the two lower bounds.
+  assert.ok(Math.abs(drivenTodayPct({ ...base, drives, lastCharge: { endedAt: '2026-11-16T20:00:00-08:00', endSoc: 43 } }) - 8.9) < 1e-9);
+  assert.equal(drivenTodayPct({ ...base, drives, lastCharge: { endedAt: '2026-11-16T07:40:00-08:00', endSoc: 80 } }), 40);
+  // A charge that ended yesterday says nothing about today.
+  assert.equal(drivenTodayPct({ ...base, lastCharge: { endedAt: '2026-11-15T07:40:00-08:00', endSoc: 80 } }), 0);
+  // No SoC now: only the logged drives.
+  assert.ok(Math.abs(drivenTodayPct({ ...base, socNow: null, drives, open, outOfPark: true, lastCharge }) - 8.9) < 1e-9);
+});
+
+test('buildRivianPlan: arrival push mid-drive at 22:58 plans from SoC minus the driving left, not the whole day', () => {
+  const now = at('2026-11-12T22:58:00-08:00');
+  const tomorrow = localDayNumber(now) + 1;
+  const common = {
+    nowMs: now, shifts: [], workDays: new Set([localDayNumber(now), tomorrow]), est: null,
+    state: { chargePercent: 40, chargeLimit: 70, isPluggedIn: false },
+    kwhPerPct: 1.44, floorPct: 25, margin: 1.1, forecastHighF: null, minAmps: 8, maxAmps: 48,
+    useOverride: { work: 20, off: 10 },
+  };
+  const old = buildRivianPlan({ ...common })!;
+  assert.equal(old.drivenPct, 0);
+  assert.equal(old.leftPct, 20);
+  assert.equal(old.socUsed, 40 - 22);
+  // The day's driving is done (the SoC already shows it): the real SoC.
+  const done = buildRivianPlan({ ...common, drivenPct: 21 })!;
+  assert.equal(done.todayUsePct, 20);
+  assert.equal(done.leftPct, 0);
+  assert.equal(done.socUsed, 40);
+  assert.ok(done.result.plan.amps! < old.result.plan.amps!, `${done.result.plan.amps} < ${old.result.plan.amps}`);
+  // Part done: only the rest comes off.
+  const part = buildRivianPlan({ ...common, drivenPct: 15 })!;
+  assert.equal(part.leftPct, 5);
+  assert.equal(part.socUsed, 40 - 5.5);
 });
 
 test('buildRivianPlan: no history -> null; with history, tomorrow work day plans in %', () => {

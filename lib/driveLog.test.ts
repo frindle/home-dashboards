@@ -3,7 +3,7 @@
 // kwhPerPct, packKwh, session stats, cells, and the "no location in any row" rule.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, existsSync, readdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, existsSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { KWH_PER_PCT_SEED, measuredKwhPerPct } from './kwhPerPct.ts';
@@ -12,7 +12,7 @@ import { cellId, hashCell } from './driveCell.ts';
 import { finishStats, startStats, stepStats } from './chargeSessionStats.ts';
 import { dailyUseLine, driveLine } from './driveLogInflux.ts';
 import { sessionLine } from './chargeSessionInflux.ts';
-import { appendDrive, driveCellSalt, markPollDay, readDrives, refreshDailyUse } from './driveLogStore.ts';
+import { appendDrive, driveCellSalt, markPollDay, readDrives, readDriveState, refreshDailyUse, saveDriveState } from './driveLogStore.ts';
 import { initialDriveState, stepDriveLog, type DriveRecord } from './rivianDriveLog.ts';
 
 const row = (i: number, kwh: number, s: number | null, e: number | null) =>
@@ -128,4 +128,31 @@ test('written rows and lines never contain location, odometer or raw cells', asy
   assert.match(line, /at_home=1,end_at_home=1 /);
   assert.equal(dailyUseLine({ date: '2026-01-10', unknown: true, used_pct: null, drive_pct: null, parked_pct: null, drives: 0, miles: 0 }), null);
   assert.match(dailyUseLine({ date: '2026-01-10', unknown: false, used_pct: 12, drive_pct: 11, parked_pct: 1, drives: 2, miles: 30 })!, /^ev_daily_use,vehicle=rivian used_pct=12,drive_pct=11,parked_pct=1,drives=2,miles=30 \d+$/);
+});
+
+test('drive state survives a restart mid-drive: the saved open drive closes as one drive on P', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'drivestate-'));
+  process.env.KEYS_DIR = dir;
+  assert.deepEqual(await readDriveState(), initialDriveState());
+  // 11-16 22:30 PT: parked, then the drive home; the container restarts at 22:45.
+  const T = Date.parse('2026-11-17T06:30:00Z');
+  let s = initialDriveState();
+  for (const p of [
+    { ms: T, gear: 'park', odometerMi: 100, soc: 52 },
+    { ms: T + 6 * 60_000, gear: 'drive', odometerMi: 100.1, soc: 52 },
+    { ms: T + 14 * 60_000, gear: 'drive', odometerMi: 105, soc: 49 },
+  ]) s = stepDriveLog(s, { atHome: false, tempF: 50, cell: 'c1', ...p }).state;
+  assert.ok(s.open);
+  await saveDriveState(s);
+  const back = await readDriveState();
+  assert.deepEqual(back, s);
+  const raw = readFileSync(join(dir, 'rivian-drive-state.json'), 'utf-8');
+  assert.ok(!/lat|lon|address/i.test(raw), raw);
+  const r = stepDriveLog(back, { ms: T + 23 * 60_000, gear: 'park', odometerMi: 112, soc: 45, atHome: true, tempF: 50, cell: 'c2' });
+  assert.equal(r.drive?.start_soc, 52);
+  assert.equal(r.drive?.end_soc, 45);
+  assert.equal(r.drive?.miles, 12);
+  // An unreadable file starts fresh.
+  writeFileSync(join(dir, 'rivian-drive-state.json'), '{bad');
+  assert.deepEqual(await readDriveState(), initialDriveState());
 });

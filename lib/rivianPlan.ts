@@ -33,31 +33,77 @@ export interface BuildInput {
   // Days with a typed need (/charging, /trips, the calendar), as the day's total driving in % of
   // the battery with no margin (lib/tripPlan.ts needUsePct). It only raises that day's expected use.
   typedUse?: Record<number, number> | null;
+  // Driving already done today in % (drivenTodayPct); only what is left of today's use comes off.
+  drivenPct?: number | null;
 }
 
 export interface BuiltPlan {
   serveDay: number;
-  socUsed: number | null;       // the SoC the plan started from (after the day's use is taken off)
+  socUsed: number | null;       // the SoC the plan started from (after the driving left today is taken off)
+  todayUsePct: number;          // today's expected use (no margin)
+  drivenPct: number;            // driving already done today
+  leftPct: number;              // what is left of today's use (no margin)
   usePctWork: number;
   usePctOff: number;
   needSource: { work: 'daily-use' | 'charge-history'; off: 'daily-use' | 'charge-history' };
   result: TonightResult;
 }
 
-// SoC the plan starts from. Inside the window it is the real SoC. Before
-// 23:00 (the 08:15 forecast) the car is still to be driven today: today's use
-// x margin comes off. From 23:00 (the update) a plugged-in car is read as is;
-// an unplugged one gets half of today's use x margin taken off (it is
-// somewhere in the day).
+// SoC the plan starts from. Inside the window it is the real SoC. Outside it
+// only the driving still left today comes off (Penn 11-17): today's expected
+// use minus the driving already done (drivenTodayPct), x margin. Before 23:00
+// that is all of what is left; from 23:00 a plugged-in car is read as is and an
+// unplugged one gets what is left, at most half of today's use. drivenPct 0
+// (nothing known) gives the old rule: the whole day before 23:00, half after.
+// So it only ever takes off less than the old rule, and only by measured driving.
 export function socForPlan(
   nowMs: number, soc: number | null, plugged: boolean | null, todayUsePct: number, margin: number,
+  drivenPct = 0,
 ): number | null {
   if (soc === null) return null;
   const d = new Date(nowMs);
   const min = d.getHours() * 60 + d.getMinutes();
   if (min < 8 * 60) return soc;
-  if (min < 23 * 60) return Math.max(0, soc - todayUsePct * margin);
-  return plugged ? soc : Math.max(0, soc - 0.5 * todayUsePct * margin);
+  const left = Math.max(0, todayUsePct - Math.max(0, drivenPct));
+  if (min < 23 * 60) return Math.max(0, soc - left * margin);
+  return plugged ? soc : Math.max(0, soc - Math.min(left, 0.5 * todayUsePct) * margin);
+}
+
+export interface OpenDrive { startMs: number; startSoc: number | null }
+
+export interface DrivenInput {
+  nowMs: number;
+  socNow: number | null;
+  outOfPark: boolean;           // the car's gear is known and not P (mid-drive)
+  drives: Array<{ start: string; start_soc: number | null; end_soc: number | null }>;
+  open: OpenDrive | null;       // the drive in progress, as saved when it started (survives a restart)
+  lastCharge: { endedAt: string; endSoc: number | null } | null;   // the car's latest finished charge
+}
+
+// Driving already done today in % of the battery. A lower bound: it never
+// counts more than the car really used, so the plan never takes off too little.
+//   - the SoC drops of today's logged drives, plus
+//   - mid-drive (out of P), the drive in progress: its start SoC minus the SoC now
+//     (the SoC already shows that part of the drive, so it must count as done);
+//   - or, when larger, the drop since a charge that ended today (it catches a
+//     drive the log missed, such as one cut by a restart).
+// 0 when nothing is known.
+export function drivenTodayPct(p: DrivenInput): number {
+  const today = localDayNumber(p.nowMs);
+  const isToday = (ms: number) => Number.isFinite(ms) && ms <= p.nowMs && localDayNumber(ms) === today;
+  let logged = 0;
+  for (const d of p.drives) {
+    if (!isToday(Date.parse(d.start)) || typeof d.start_soc !== 'number' || typeof d.end_soc !== 'number') continue;
+    logged += d.start_soc - d.end_soc;
+  }
+  const o = p.open;
+  if (p.outOfPark && o && typeof o.startSoc === 'number' && p.socNow !== null && isToday(o.startMs)) {
+    logged += o.startSoc - p.socNow;
+  }
+  const c = p.lastCharge;
+  const sinceCharge = c && typeof c.endSoc === 'number' && p.socNow !== null && isToday(Date.parse(c.endedAt))
+    ? c.endSoc - p.socNow : 0;
+  return Math.max(0, logged, sinceCharge);
 }
 
 export function buildRivianPlan(p: BuildInput): BuiltPlan | null {
@@ -77,14 +123,18 @@ export function buildRivianPlan(p: BuildInput): BuiltPlan | null {
   const typed = p.typedUse ?? null;
   const todayUse = Math.max(todayIsWork ? usePctWork : usePctOff, typed?.[localDayNumber(p.nowMs)] ?? 0);
   const rawSoc = typeof p.state?.chargePercent === 'number' && p.state.chargePercent > 0 ? p.state.chargePercent : null;
-  const socUsed = socForPlan(p.nowMs, rawSoc, p.state?.isPluggedIn ?? null, todayUse, p.margin);
+  const drivenPct = Math.max(0, p.drivenPct ?? 0);
+  const socUsed = socForPlan(p.nowMs, rawSoc, p.state?.isPluggedIn ?? null, todayUse, p.margin, drivenPct);
   const result = planTonight({
     day: serveDay, shifts: p.shifts, workDays: p.workDays, usePctWork, usePctOff,
     socPct: socUsed, limitPct: p.state?.chargeLimit, margin: p.margin, floorPct: p.floorPct,
     topUpLimitPct: topUpLimitFor(p.forecastHighF), kwhPerPct: p.kwhPerPct, minAmps: p.minAmps, maxAmps: p.maxAmps,
     peak: p.peakNights ?? null, usePctByDay: typed,
   });
-  return { serveDay, socUsed, usePctWork, usePctOff, needSource, result };
+  return {
+    serveDay, socUsed, todayUsePct: todayUse, drivenPct, leftPct: Math.max(0, todayUse - drivenPct),
+    usePctWork, usePctOff, needSource, result,
+  };
 }
 
 export interface ForecastTemp { ms: number; tempF: number }

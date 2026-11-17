@@ -9,7 +9,9 @@ import { readConfig } from '@/lib/config';
 import { readChargeHistory } from '@/lib/chargeHistory';
 import { vehicleIdResolver } from '@/lib/chargeSessionInflux';
 import { arrivalFloorOf, localDayNumber, needEstimate, nextUseDay, sinceHistoryStart, type NeedEstimate, type Shift } from '@/lib/chargePlan';
-import { readDailyUse, readDrives } from '@/lib/driveLogStore';
+import { readDailyUse, readDrives, readDriveState } from '@/lib/driveLogStore';
+import { MAX_DRIVE_GAP_MS } from '@/lib/rivianDriveLog';
+import type { CarChargeRecord } from '@/lib/rivianChargeLog';
 import { liveNeed, type LiveNeed } from '@/lib/needModels';
 import { localDate } from '@/lib/rivianDailyUse';
 import { KWH_PER_PCT_SEED, kwhPerPctRows, measuredKwhPerPct } from '@/lib/kwhPerPct';
@@ -17,7 +19,7 @@ import { readCarChargeHistory } from '@/lib/rivianChargeRunner';
 import { getShiftCalendar } from '@/lib/shiftCalendar';
 import { applyIgnored } from '@/lib/shiftChoices';
 import { readIgnored } from '@/lib/shiftChoicesStore';
-import { buildRivianPlan, driveTimeTemps, forecastHighFor, forecastTempsFrom, highOnDay, type BuiltPlan, type ForecastTemp, type PlanState } from '@/lib/rivianPlan';
+import { buildRivianPlan, drivenTodayPct, driveTimeTemps, forecastHighFor, forecastTempsFrom, highOnDay, type BuiltPlan, type ForecastTemp, type OpenDrive, type PlanState } from '@/lib/rivianPlan';
 import { needUsePct } from '@/lib/tripPlan';
 import { readTripChoices } from '@/lib/tripStore';
 import { loadPeakDays, peakNightsFor } from '@/lib/peakData';
@@ -32,6 +34,39 @@ export interface RivianCachedState extends PlanState {
   lon?: number | null;
   isCharging?: boolean | null;
   batteryCapacityKwh?: number | null;
+  gearStatus?: string;
+  powerState?: string;
+}
+
+// Out of P right now (mid-drive). Unknown gear counts as not driving, like the drive log.
+export function outOfParkOf(s: RivianCachedState | null): boolean {
+  return !!s?.gearStatus && s.gearStatus !== 'park';
+}
+
+// Driving already done today (lib/rivianPlan.ts drivenTodayPct) from the drive
+// log, the drive in progress (its saved start, so a restart does not lose it)
+// and the car's latest finished charge. 0 when none of it can be read.
+async function drivenNow(
+  nowMs: number, state: RivianCachedState | null, carCharges: CarChargeRecord[],
+): Promise<{ pct: number; midDrive: boolean; open: OpenDrive | null }> {
+  const midDrive = outOfParkOf(state);
+  try {
+    const [drives, ds] = await Promise.all([readDrives(), readDriveState()]);
+    const o = ds.open && nowMs - ds.open.lastMs <= MAX_DRIVE_GAP_MS ? ds.open : null;
+    const open: OpenDrive | null = o ? { startMs: o.start.ms, startSoc: o.start.soc } : null;
+    let last: CarChargeRecord | null = null;
+    for (const c of carCharges) {
+      if (c.source === 'rivian-car' && Number.isFinite(Date.parse(c.endedAt)) && (!last || Date.parse(c.endedAt) > Date.parse(last.endedAt))) last = c;
+    }
+    const socNow = typeof state?.chargePercent === 'number' && state.chargePercent > 0 ? state.chargePercent : null;
+    const pct = drivenTodayPct({
+      nowMs, socNow, outOfPark: midDrive, drives, open,
+      lastCharge: last ? { endedAt: last.endedAt, endSoc: last.endSoc } : null,
+    });
+    return { pct, midDrive, open };
+  } catch {
+    return { pct: 0, midDrive, open: null };
+  }
 }
 
 export async function readRivianCachedState(): Promise<RivianCachedState | null> {
@@ -127,6 +162,8 @@ export interface RivianPlanRun {
   peakNights: PeakNightIn[] | null;   // Rev 18: room under the day peak, serve day + 2; null = off
   typedUse: Record<number, number>;   // typed needs as expected use in % (no margin), by day
   houseSince: string | null;          // first day of the charge log (for the night forecast)
+  midDrive: boolean;                  // the car was out of P when the plan was built
+  openDrive: OpenDrive | null;        // the drive in progress, as saved at its start
 }
 
 // Rev 18: room under the day peak for the serve day and the two after it, from the NV usage in
@@ -201,11 +238,12 @@ export async function rivianNightPlan(
   const need7 = await needFromDailyUse(nowMs, shifts, workDays, opts.forecastTemps ?? []);
   const peakNights = await peakNightsNow(nowMs, workDays, forecastHighF, opts.forecastTemps ?? [], houseSince);
   const typedUse = await typedUseOf(nowMs, nextUseDay(nowMs), forecastHighF, opts.forecastTemps ?? []);
+  const driven = await drivenNow(nowMs, state, carCharges);
   const built = buildRivianPlan({
     nowMs, est, shifts, workDays, state, kwhPerPct, floorPct: floor.arrivalFloorPct, margin: floor.arrivalDriveMargin,
     forecastHighF, minAmps: RIVIAN_MIN_AMPS, maxAmps: RIVIAN_MAX_AMPS,
     useOverride: need7 ? { work: need7.work, off: need7.off } : null,
-    peakNights, typedUse,
+    peakNights, typedUse, drivenPct: driven.pct,
   });
-  return { built, est, state, shifts, workDays, timeOffDays: cal?.timeOffDays ?? new Set(), calendar: cal ? { workDays: cal.workDays, shifts: cal.shifts } : null, kwhPerPct, forecastHighF, need7, peakNights, typedUse, houseSince };
+  return { built, est, state, shifts, workDays, timeOffDays: cal?.timeOffDays ?? new Set(), calendar: cal ? { workDays: cal.workDays, shifts: cal.shifts } : null, kwhPerPct, forecastHighF, need7, peakNights, typedUse, houseSince, midDrive: driven.midDrive, openDrive: driven.open };
 }

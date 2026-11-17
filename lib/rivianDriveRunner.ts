@@ -1,14 +1,14 @@
 // Feeds the Rivian drive log from the dashboard poll (EV charge plan #6).
 // Called once per /api/dashboard cycle with the state it just read; never
-// throws, and the in-memory machine state is lost on a restart (a drive in
-// progress at that moment is simply not logged).
+// throws. The machine state is saved to keys/ after each change and reloaded
+// on the first poll, so a drive in progress survives a container restart.
 import { readConfig } from '@/lib/config';
 import { readChargeHistory } from '@/lib/chargeHistory';
 import { vehicleIdResolver } from '@/lib/chargeSessionInflux';
 import { sinceHistoryStart } from '@/lib/chargePlan';
-import { driveCellSalt, appendDrive, markPollDay, refreshDailyUse } from './driveLogStore.ts';
+import { driveCellSalt, appendDrive, markPollDay, readDriveState, refreshDailyUse, saveDriveState } from './driveLogStore.ts';
 import { hashCell } from './driveCell.ts';
-import { initialDriveState, stepDriveLog, type DriveState } from './rivianDriveLog.ts';
+import { stepDriveLog, type DriveState } from './rivianDriveLog.ts';
 import { localDate } from './rivianDailyUse.ts';
 
 export interface DriveRunnerInput {
@@ -21,7 +21,7 @@ export interface DriveRunnerInput {
   lon?: number | null;
 }
 
-let state: DriveState = initialDriveState();
+let state: DriveState | null = null;
 let chain: Promise<unknown> = Promise.resolve();
 
 // gps: whether lat/lon are fresh enough to name a cell.
@@ -32,6 +32,7 @@ export function recordRivianDrivePoll(
   const run = chain.then(async () => {
     try {
       await markPollDay(localDate(now));
+      if (!state) state = await readDriveState();
       let cell: string | null = null;
       if (gpsFresh && typeof s.lat === 'number' && typeof s.lon === 'number') {
         cell = hashCell(await driveCellSalt(), s.lat, s.lon);
@@ -46,8 +47,10 @@ export function recordRivianDrivePoll(
         odometerMi: odo,
         atHome, tempF, cell,
       });
+      const changed = out.state !== state && JSON.stringify(out.state) !== JSON.stringify(state);
       state = out.state;
       if (out.drive) await appendDrive(out.drive);
+      if (changed) await saveDriveState(state);
     } catch (e) {
       console.error('[drive-log] poll failed:', e instanceof Error ? e.message : e);
     }
