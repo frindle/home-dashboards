@@ -399,17 +399,24 @@ function planFields(s: RivianChargeStatus) {
 let last: RivianChargeStatus | null = null;
 let lastRunMs = 0;
 let inFlight: Promise<RivianChargeStatus> | null = null;
+let inFlightArrived = false;   // the run in flight was started by an arrival
+const pending = (): Promise<RivianChargeStatus> | null => inFlight;   // re-read after an await
 
 // Resolves to the latest status (a fresh run when due or forced).
 export async function runRivianChargeControl(opts: { force?: boolean; arrived?: boolean } = {}): Promise<RivianChargeStatus | null> {
   if (inFlight) {
     if (!opts.force) return inFlight;
     await inFlight.catch(() => {});
-    if (inFlight) return inFlight;
+    // Another forced caller may have started a fresh run meanwhile; it serves this call too,
+    // unless this is an arrival and that run is not (the plug-in push would be lost).
+    let cur = pending();
+    while (cur && opts.arrived && !inFlightArrived) { await cur.catch(() => {}); cur = pending(); }
+    if (cur) return cur;
   }
   const now = Date.now();
   if (!opts.force && last && now - lastRunMs < RUN_INTERVAL_MS) return last;
   lastRunMs = now;
+  inFlightArrived = !!opts.arrived;
   inFlight = runOnce(now, !!opts.arrived).then((s) => { last = s; void recordPlan('rivian', planFields(s), s.atMs); return s; }).finally(() => { inFlight = null; });
   return inFlight;
 }

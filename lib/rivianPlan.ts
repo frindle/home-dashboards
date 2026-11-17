@@ -91,15 +91,17 @@ export interface DrivenInput {
 export function drivenTodayPct(p: DrivenInput): number {
   const today = localDayNumber(p.nowMs);
   const isToday = (ms: number) => Number.isFinite(ms) && ms <= p.nowMs && localDayNumber(ms) === today;
+  const o = p.open;
+  const midDrive = p.outOfPark && !!o && typeof o.startSoc === 'number' && p.socNow !== null && isToday(o.startMs);
   let logged = 0;
   for (const d of p.drives) {
-    if (!isToday(Date.parse(d.start)) || typeof d.start_soc !== 'number' || typeof d.end_soc !== 'number') continue;
+    const ms = Date.parse(d.start);
+    if (!isToday(ms) || typeof d.start_soc !== 'number' || typeof d.end_soc !== 'number') continue;
+    // The drive in progress already logged (read between its row and the saved state): count it once.
+    if (midDrive && ms === o!.startMs) continue;
     logged += d.start_soc - d.end_soc;
   }
-  const o = p.open;
-  if (p.outOfPark && o && typeof o.startSoc === 'number' && p.socNow !== null && isToday(o.startMs)) {
-    logged += o.startSoc - p.socNow;
-  }
+  if (midDrive) logged += o!.startSoc! - p.socNow!;
   const c = p.lastCharge;
   const sinceCharge = c && typeof c.endSoc === 'number' && p.socNow !== null && isToday(Date.parse(c.endedAt))
     ? c.endSoc - p.socNow : 0;

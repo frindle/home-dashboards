@@ -156,3 +156,14 @@ test('drive state survives a restart mid-drive: the saved open drive closes as o
   writeFileSync(join(dir, 'rivian-drive-state.json'), '{bad');
   assert.deepEqual(await readDriveState(), initialDriveState());
 });
+
+test('readDrives: a drive logged twice (restart between the row and the saved state) counts once', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'drivedup-'));
+  process.env.KEYS_DIR = dir;
+  const a = { start: '2026-11-17T06:36:00.000Z', end: '2026-11-17T06:53:00.000Z', start_soc: 52, end_soc: 45 };
+  const b = { ...a, start: '2026-11-17T18:00:00.000Z', end: '2026-11-17T18:20:00.000Z' };
+  writeFileSync(join(dir, 'rivian-drives.jsonl'), [a, a, b, { ...a, end_soc: 44 }].map((r) => JSON.stringify(r)).join('\n') + '\n');
+  const rows = await readDrives();
+  assert.deepEqual(rows.map((r) => r.start), [a.start, b.start]);
+  assert.equal(rows[0].end_soc, 45);
+});

@@ -49,8 +49,10 @@ export function recordRivianDrivePoll(
       });
       const changed = out.state !== state && JSON.stringify(out.state) !== JSON.stringify(state);
       state = out.state;
-      if (out.drive) await appendDrive(out.drive);
+      // Save first: a restart between the two then loses the row instead of logging the
+      // drive twice (a still-open saved drive would close again on the next P poll).
       if (changed) await saveDriveState(state);
+      if (out.drive) await appendDrive(out.drive);
     } catch (e) {
       console.error('[drive-log] poll failed:', e instanceof Error ? e.message : e);
     }
