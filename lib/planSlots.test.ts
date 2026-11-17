@@ -161,6 +161,9 @@ test('drivenTodayPct: logged drives today, the drive in progress mid-drive, the 
   // Mid-drive (out of P): the drive in progress, from its saved start (survives a restart).
   const open = { startMs: at('2026-11-16T22:36:00-08:00'), startSoc: 47 };
   assert.ok(Math.abs(drivenTodayPct({ ...base, drives, open, outOfPark: true }) - (8.9 + 7)) < 1e-9);
+  // Read between the logged row and the saved state: the drive in progress is also a row. Count it once.
+  const loggedToo = [...drives, drive(new Date(open.startMs).toISOString(), 47, 42)];
+  assert.ok(Math.abs(drivenTodayPct({ ...base, drives: loggedToo, open, outOfPark: true }) - (8.9 + 7)) < 1e-9);
   // Parked: the open record is not a drive in progress, so it is ignored.
   assert.ok(Math.abs(drivenTodayPct({ ...base, drives, open, outOfPark: false }) - 8.9) < 1e-9);
   // A drive in progress that started yesterday is not today's driving.

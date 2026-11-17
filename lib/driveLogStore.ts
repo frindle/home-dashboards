@@ -85,7 +85,16 @@ async function readJsonl<T>(path: string): Promise<T[]> {
   return out;
 }
 
-export const readDrives = () => readJsonl<DriveRecord>(drivesPath());
+// One row per drive start: a drive logged twice (a restart between the row and the
+// saved state, before 11-17) counts once.
+export async function readDrives(): Promise<DriveRecord[]> {
+  const seen = new Set<string>();
+  return (await readJsonl<DriveRecord>(drivesPath())).filter((d) => {
+    if (typeof d.start !== 'string' || seen.has(d.start)) return false;
+    seen.add(d.start);
+    return true;
+  });
+}
 export const readDailyUse = () => readJsonl<DailyUseRow>(dailyPath());
 
 // jsonl = truth, Influx = best-effort copy.
