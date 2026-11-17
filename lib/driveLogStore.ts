@@ -3,11 +3,12 @@
 //   rivian-daily-use.jsonl    derived per-day use, rewritten whole after each charge
 //   rivian-poll-days.json     local dates that had a poll (so outages read as unknown)
 //   drive-cell-salt           32 random bytes (hex), created on first use
+//   rivian-drive-state.json   the drive log's machine state (the drive in progress survives a restart)
 // No coordinates, odometer or address is ever written.
 import { randomBytes } from 'node:crypto';
 import { readFile, rename, writeFile, appendFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { DriveRecord } from './rivianDriveLog.ts';
+import { initialDriveState, type DriveRecord, type DriveState } from './rivianDriveLog.ts';
 import { computeDailyUse, type DailyUseRow, type UseCharge } from './rivianDailyUse.ts';
 import { dailyUseLine, driveLine, writeInfluxLines } from './driveLogInflux.ts';
 
@@ -18,6 +19,48 @@ const drivesPath = () => join(dir(), 'rivian-drives.jsonl');
 const dailyPath = () => join(dir(), 'rivian-daily-use.jsonl');
 const pollDaysPath = () => join(dir(), 'rivian-poll-days.json');
 const saltPath = () => join(dir(), 'drive-cell-salt');
+const statePath = () => join(dir(), 'rivian-drive-state.json');
+
+// The drive log's machine state, saved after each poll that changes it, so a
+// container restart mid-drive keeps the drive (11-16 22:36: a restart at 22:45
+// lost the drive home). Snapshots hold SoC, odometer, temp and the salted cell
+// hash only, like the drive rows. A stale open drive is dropped by stepDriveLog
+// as a gap, as before.
+const num = (x: unknown): number | null => (typeof x === 'number' && Number.isFinite(x) ? x : null);
+function snapOf(x: unknown): DriveState['lastParked'] {
+  if (!x || typeof x !== 'object') return null;
+  const o = x as Record<string, unknown>;
+  const ms = num(o.ms);
+  if (ms === null) return null;
+  return {
+    ms, soc: num(o.soc), odometerMi: num(o.odometerMi),
+    atHome: typeof o.atHome === 'boolean' ? o.atHome : null, tempF: num(o.tempF),
+    cell: typeof o.cell === 'string' ? o.cell : null,
+  };
+}
+export async function readDriveState(): Promise<DriveState> {
+  try {
+    const s = JSON.parse(await readFile(statePath(), 'utf-8')) as Record<string, unknown> | null;
+    if (s && typeof s === 'object') {
+      const o = s.open as { start?: unknown; lastMs?: unknown } | null | undefined;
+      const start = o ? snapOf(o.start) : null;
+      const lastMs = o ? num(o.lastMs) : null;
+      return {
+        lastParked: snapOf(s.lastParked),
+        open: start && lastMs !== null ? { start, lastMs } : null,
+        skipUntilPark: s.skipUntilPark === true,
+      };
+    }
+  } catch { /* none or unreadable */ }
+  return initialDriveState();
+}
+export async function saveDriveState(s: DriveState): Promise<void> {
+  try {
+    const tmp = statePath() + '.tmp';
+    await writeFile(tmp, JSON.stringify(s), { mode: 0o600 });
+    await rename(tmp, statePath());
+  } catch (e) { console.error('[drive-log] state save failed:', e instanceof Error ? e.message : e); }
+}
 
 let saltCache: Buffer | null = null;
 export async function driveCellSalt(): Promise<Buffer> {
