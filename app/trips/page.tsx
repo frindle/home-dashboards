@@ -128,7 +128,7 @@ export default async function TripsPage({ searchParams }: { searchParams: Promis
       <main className="trips">
         <h1>Trips, next 7 days</h1>
         {off && <p className="trips-warn">Forecast charging is off, so trips and typed needs are not used: the car fills to its charge limit each night. Turn it back on at <Link href="/charging">Charging</Link>.</p>}
-        {!on && <p className="trips-note">The personal calendar is not connected. Set PERSONAL_CAL_URL to turn trip planning on.</p>}
+        {!on && <p className="trips-note">The personal calendar is not connected. Set PERSONAL_CAL_URL (or PERSONAL_CAL_EXTRA) to turn trip planning on.</p>}
         {on && !layer && <p className="trips-warn">The personal calendar could not be read, or the home location is not set.</p>}
         {layer && !shown.length && <p className="trips-note">No events with a location in the next 7 days.</p>}
         {shown.map((d) => <Day key={d.day} d={d} focus={d.day === focusDay} />)}

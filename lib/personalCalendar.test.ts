@@ -1,7 +1,7 @@
 // Run: TZ=America/Los_Angeles node --experimental-strip-types --test lib/personalCalendar.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createPersonalCalendarSource, eventsWithin, parsePersonalEvents, tagFromNotes } from './personalCalendar.ts';
+import { createPersonalCalendarSource, extraSources, personalCalendarOn, eventsWithin, parsePersonalEvents, tagFromNotes } from './personalCalendar.ts';
 
 const day = (iso: string) => Math.round(Date.parse(iso + 'T00:00:00Z') / 86_400_000);
 const ev = (...lines: string[]) => ['BEGIN:VEVENT', ...lines, 'END:VEVENT'].join('\r\n');
@@ -62,4 +62,63 @@ test('flag on: webcal as https, basic auth, cached, a failure keeps the last cop
   console.error = (...a: unknown[]) => { logged.push(a.join(' ')); };
   try { assert.equal((await get(2 * 3_600_000 * 4, env, f))!.length, 5); } finally { console.error = orig; }
   assert.ok(logged.length === 1 && !logged[0].includes('s3cret') && !logged[0].includes('cal.invalid'));
+});
+
+const DOGS = cal(
+  ev('UID:d1', 'SUMMARY:vet', 'DTSTART:20261117T200000Z', 'DTEND:20261117T210000Z', 'LOCATION:Vet clinic'),
+  ev('UID:d2', 'SUMMARY:daycare', 'DTSTART:20261117T160000Z', 'DTEND:20261117T170000Z'),
+  ev('UID:d3', 'SUMMARY:cancelled', 'DTSTART:20261117T160000Z', 'STATUS:CANCELLED'),
+  ev('UID:1', 'SUMMARY:same uid as a personal event', 'DTSTART:20261118T200000Z', 'DTEND:20261118T210000Z'),
+);
+const DENV = { PERSONAL_CAL_EXTRA: 'dogs=webcal://dogs.invalid/s3cret?export', PERSONAL_CAL_EXTRA_USER: 'du', PERSONAL_CAL_EXTRA_PASSWORD: 'dp' };
+
+test('extra calendars: label=url list, on without PERSONAL_CAL_URL, default miles setting', () => {
+  assert.deepEqual(extraSources({ PERSONAL_CAL_EXTRA: 'dogs=https://a.invalid/x | bad | =https://b | cats=https://c.invalid/y|dogs=https://dup' }),
+    [{ label: 'dogs', url: 'https://a.invalid/x' }, { label: 'cats', url: 'https://c.invalid/y' }]);
+  assert.equal(personalCalendarOn({}), false);
+  assert.equal(personalCalendarOn(DENV), true);
+});
+
+test('dog events become drives: located ones keep their place, unlocated ones assume the default miles, uids are namespaced', async () => {
+  const get = createPersonalCalendarSource();
+  const seen: { url: string; headers: Record<string, string> }[] = [];
+  const f = async (url: string, init: { headers: Record<string, string> }) => { seen.push({ url, headers: init.headers }); return { ok: true, status: 200, text: async () => DOGS }; };
+  const all = (await get(1_000, { ...DENV, PERSONAL_CAL_EXTRA_DEFAULT_MILES: '12' }, f))!;
+  assert.equal(seen[0].url, 'https://dogs.invalid/s3cret?export');
+  assert.equal(seen[0].headers.Authorization, 'Basic ' + Buffer.from('du:dp').toString('base64'));
+  const by = Object.fromEntries(all.map((e) => [e.uid, e]));
+  assert.deepEqual(Object.keys(by).sort(), ['dogs:1', 'dogs:d1', 'dogs:d2']);
+  assert.equal(by['dogs:d1'].assumedMiles, undefined);
+  assert.equal(by['dogs:d2'].assumedMiles, 12);
+  assert.equal(by['dogs:d2'].source, 'dogs');
+});
+
+test('personal + dogs: the same appointment in both feeds counts once; a dogs feed that fails is logged and left out', async () => {
+  const get = createPersonalCalendarSource();
+  const personal = cal(ev('UID:p1', 'SUMMARY:x', 'DTSTART:20261117T200000Z', 'DTEND:20261117T210000Z', 'LOCATION:Vet clinic'));
+  let dogsFail = false;
+  const f = async (url: string) => {
+    if (url.includes('dogs.invalid')) {
+      if (dogsFail) throw new Error(`boom ${url}`);
+      return { ok: true, status: 200, text: async () => DOGS };
+    }
+    return { ok: true, status: 200, text: async () => personal };
+  };
+  const env = { PERSONAL_CAL_URL: 'https://cal.invalid/p?export', ...DENV };
+  const all = (await get(1_000, env, f))!;
+  assert.deepEqual(all.map((e) => e.uid).sort(), ['dogs:1', 'dogs:d2', 'p1']);   // dogs:d1 = p1 at the same time and place
+  // the dogs feed down and nothing cached for it (fresh source): planning has the personal calendar only
+  const get2 = createPersonalCalendarSource();
+  dogsFail = true;
+  const logged: string[] = [];
+  const orig = console.error;
+  console.error = (...a: unknown[]) => { logged.push(a.join(' ')); };
+  try { assert.deepEqual((await get2(1_000, env, f))!.map((e) => e.uid), ['p1']); } finally { console.error = orig; }
+  assert.equal(logged.length, 1);
+  assert.ok(logged[0].includes('dogs') && !logged[0].includes('s3cret') && !logged[0].includes('invalid'));
+  // every feed down: null, never a throw
+  const get3 = createPersonalCalendarSource();
+  const fail = async () => { throw new Error('down'); };
+  console.error = () => {};
+  try { assert.equal(await get3(1_000, DENV, fail), null); } finally { console.error = orig; }
 });

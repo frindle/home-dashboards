@@ -1,7 +1,7 @@
 // Run: TZ=America/Los_Angeles node --experimental-strip-types --test lib/tripPlan.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { adjustForTrip, awayDays, choiceKey, metersBetween, milesPerPct, planTripDay, type TripDayInput, type TripEvent, manualAdjust, pctForMiles } from './tripPlan.ts';
+import { ASSUMED_LEAD_MIN, adjustForTrip, awayDays, choiceKey, metersBetween, milesPerPct, planTripDay, type TripDayInput, type TripEvent, manualAdjust, pctForMiles } from './tripPlan.ts';
 import type { LatLon } from './ics.ts';
 
 const DAY = Math.round(Date.UTC(2026, 10, 17) / 86_400_000);
@@ -169,4 +169,40 @@ test('manualAdjust: the typed day need with the trip margin and floor; raise onl
   const mild = pctForMiles(120, 70), cold = pctForMiles(120, 30);
   assert.ok(Math.abs(mild - (120 / milesPerPct(70) + 2)) < 1e-9);
   assert.ok(cold > mild);
+});
+
+test('dog event with no place: one assumed round trip from home, leaves ASSUMED_LEAD_MIN early', async () => {
+  const d = await planTripDay(input([ev('d', 12, 13, null, { assumedMiles: 10 })]));
+  assert.ok(d);
+  near(d!.miles, 10);
+  assert.equal(d!.unplaced.length, 0);
+  assert.equal(d!.departMs, at(12) - ASSUMED_LEAD_MIN * 60_000);
+  assert.equal(d!.stops[0].rule, 'assumed');
+  // without assumedMiles it is still just unplaced
+  const u = await planTripDay(input([ev('u', 12, 13, null)]));
+  assert.deepEqual([u!.miles, u!.unplaced], [0, ['u']]);
+});
+
+test('overlapping dog events (the same appointment twice) count once, the larger; separate ones add; a skip drops it', async () => {
+  const dup = await planTripDay(input([ev('d1', 12, 14, null, { assumedMiles: 8 }), ev('d2', 13, 15, null, { assumedMiles: 10 })]));
+  near(dup!.miles, 10);
+  const two = await planTripDay(input([ev('d1', 9, 10, null, { assumedMiles: 8 }), ev('d2', 15, 16, null, { assumedMiles: 10 })]));
+  near(two!.miles, 18);
+  const skipped = await planTripDay(input([ev('d1', 9, 10, null, { assumedMiles: 8 })], { choices: { [choiceKey('d1', DAY)]: 'skip' } }));
+  assert.equal(skipped, null);
+});
+
+test('shift day: a dog event during the shift adds its miles once on top of the commute, and is flagged until chosen', async () => {
+  const x = { shift: SHIFT, work: WORK };
+  const base = await planTripDay(input([ev('s', 9, 10, null, { assumedMiles: 10 })], x));
+  const none = await planTripDay(input([ev('l', 18, 19, P(0.05), {})], x));
+  assert.ok(base && none);
+  near(base!.extraMiles, 10);
+  assert.deepEqual(base!.overlaps, ['s']);
+  const going = await planTripDay(input([ev('s', 9, 10, null, { assumedMiles: 10 })], { ...x, choices: { [choiceKey('s', DAY)]: 'going' } }));
+  assert.deepEqual(going!.overlaps, []);
+  near(going!.extraMiles, 10);
+  // the same appointment listed twice during the shift is still one round trip
+  const twice = await planTripDay(input([ev('s', 9, 10, null, { assumedMiles: 10 }), ev('t', 9, 10, null, { assumedMiles: 10 })], x));
+  near(twice!.extraMiles, 10);
 });
