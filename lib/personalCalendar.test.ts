@@ -1,7 +1,7 @@
 // Run: TZ=America/Los_Angeles node --experimental-strip-types --test lib/personalCalendar.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createPersonalCalendarSource, extraSources, personalCalendarOn, eventsWithin, parsePersonalEvents, tagFromNotes } from './personalCalendar.ts';
+import { createPersonalCalendarSource, extraCalendarLogin, extraSources, personalCalendarOn, eventsWithin, parsePersonalEvents, tagFromNotes } from './personalCalendar.ts';
 
 const day = (iso: string) => Math.round(Date.parse(iso + 'T00:00:00Z') / 86_400_000);
 const ev = (...lines: string[]) => ['BEGIN:VEVENT', ...lines, 'END:VEVENT'].join('\r\n');
@@ -69,7 +69,27 @@ const DOGS = cal(
   ev('UID:d2', 'SUMMARY:daycare', 'DTSTART:20261117T160000Z', 'DTEND:20261117T170000Z'),
   ev('UID:d3', 'SUMMARY:cancelled', 'DTSTART:20261117T160000Z', 'STATUS:CANCELLED'),
   ev('UID:1', 'SUMMARY:same uid as a personal event', 'DTSTART:20261118T200000Z', 'DTEND:20261118T210000Z'),
+  ev('UID:d4', 'SUMMARY:flea meds', 'DTSTART;VALUE=DATE:20261119', 'DTEND;VALUE=DATE:20261120'),
 );
+
+test('extra calendar login: own login first; the personal login only on the same host; none for a third-party feed', () => {
+  const base = { PERSONAL_CAL_URL: 'webcal://nc.example.com/remote.php/dav/x?export', PERSONAL_CAL_USER: 'u', PERSONAL_CAL_PASSWORD: 'p' };
+  assert.deepEqual(extraCalendarLogin('https://nc.example.com/remote.php/dav/dogs?export', base), { user: 'u', password: 'p' });
+  assert.deepEqual(extraCalendarLogin('webcal://NC.example.com/dogs?export', base), { user: 'u', password: 'p' });
+  assert.deepEqual(extraCalendarLogin('webcal://vet.example.org/feed.ics', base), {});
+  assert.deepEqual(extraCalendarLogin('webcal://vet.example.org/feed.ics', { PERSONAL_CAL_USER: 'u', PERSONAL_CAL_PASSWORD: 'p' }), {});
+  assert.deepEqual(extraCalendarLogin('webcal://vet.example.org/feed.ics', { ...base, PERSONAL_CAL_EXTRA_USER: 'du', PERSONAL_CAL_EXTRA_PASSWORD: 'dp' }), { user: 'du', password: 'dp' });
+});
+
+test('a third-party dogs feed never gets the personal calendar password', async () => {
+  const get = createPersonalCalendarSource();
+  const seen: Record<string, string>[] = [];
+  const f = async (url: string, init: { headers: Record<string, string> }) => { seen.push(init.headers); return { ok: true, status: 200, text: async () => (url.includes('dogs.invalid') ? DOGS : cal()) }; };
+  await get(1_000, { PERSONAL_CAL_URL: 'https://cal.invalid/p?export', PERSONAL_CAL_USER: 'u', PERSONAL_CAL_PASSWORD: 'p', PERSONAL_CAL_EXTRA: 'dogs=webcal://dogs.invalid/feed' }, f);
+  assert.equal(seen.length, 2);
+  assert.ok(seen[0].Authorization);
+  assert.equal(seen[1].Authorization, undefined);
+});
 const DENV = { PERSONAL_CAL_EXTRA: 'dogs=webcal://dogs.invalid/s3cret?export', PERSONAL_CAL_EXTRA_USER: 'du', PERSONAL_CAL_EXTRA_PASSWORD: 'dp' };
 
 test('extra calendars: label=url list, on without PERSONAL_CAL_URL, default miles setting', () => {

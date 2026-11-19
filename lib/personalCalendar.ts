@@ -48,7 +48,8 @@ export function parsePersonalEvents(ics: string, extra?: { label: string; defaul
   for (const e of parseIcsEvents(ics)) {
     if (!e.start || e.cancelled || e.open) continue;
     const located = !!(e.location || e.structuredGeo || e.geo);
-    if (!located && !extra) continue;
+    // An all-day event with no place is a reminder ("flea meds"), not a drive.
+    if (!located && (!extra || e.start.allDay)) continue;
     const startMs = e.start.ms;
     const endMs = e.end && e.end.ms > startMs ? e.end.ms : startMs;
     const allDay = e.start.allDay;
@@ -127,6 +128,20 @@ function createFeed() {
   };
 }
 
+function hostOf(raw: string | undefined): string | null {
+  if (!raw) return null;
+  try { return new URL(raw.replace(/^webcal:\/\//i, 'https://')).host.toLowerCase(); } catch { return null; }
+}
+
+// Login for an extra calendar: its own, or the personal calendar's only when both live on the same
+// host, so the Nextcloud password never goes to a third-party feed.
+export function extraCalendarLogin(url: string, env: Record<string, string | undefined>): { user?: string; password?: string } {
+  if (env.PERSONAL_CAL_EXTRA_USER) return { user: env.PERSONAL_CAL_EXTRA_USER, password: env.PERSONAL_CAL_EXTRA_PASSWORD };
+  const h = hostOf(url);
+  if (h && h === hostOf(env.PERSONAL_CAL_URL)) return { user: env.PERSONAL_CAL_USER, password: env.PERSONAL_CAL_PASSWORD };
+  return {};
+}
+
 // The same event in two feeds (same start, end and place) counts once; the personal calendar's copy wins.
 function dedupe(lists: PersonalEvent[][]): PersonalEvent[] {
   const seen = new Set<string>();
@@ -168,7 +183,7 @@ export function createPersonalCalendarSource() {
       let feed = extras.get(x.label);
       if (!feed) { feed = createFeed(); extras.set(x.label, feed); }
       const l = await feed({
-        now, raw: x.url, user: env.PERSONAL_CAL_EXTRA_USER || env.PERSONAL_CAL_USER, password: env.PERSONAL_CAL_EXTRA_USER ? env.PERSONAL_CAL_EXTRA_PASSWORD : env.PERSONAL_CAL_PASSWORD,
+        now, raw: x.url, ...extraCalendarLogin(x.url, env),
         fetchImpl, refresh: opts.refresh, parse: (ics) => parsePersonalEvents(ics, { label: x.label, defaultMiles: miles }), logName: `extra calendar "${x.label}"`,
       });
       if (l) lists.push(l);
