@@ -116,7 +116,7 @@ export async function computeTrips(run: RivianPlanRun, nowMs: number, opts: { re
     const views: EventView[] = [];
     for (const e of dayEvents) {
       const placed = await placeEvent(e, overrides);
-      tripEvents.push({ uid: e.uid, startMs: e.startMs, endMs: e.endMs, allDay: e.allDay, multiDay: e.multiDay, tag: e.tag, point: placed ? { lat: placed.lat, lon: placed.lon } : null });
+      tripEvents.push({ uid: e.uid, startMs: e.startMs, endMs: e.endMs, allDay: e.allDay, multiDay: e.multiDay, tag: e.tag, point: placed ? { lat: placed.lat, lon: placed.lon } : null, ...(e.assumedMiles ? { assumedMiles: e.assumedMiles } : {}) });
       views.push({
         uid: e.uid, startMs: e.startMs, allDay: e.allDay, multiDay: e.multiDay, location: e.location, placed: !!placed, tag: e.tag,
         toggle: toggles[`${e.uid}@${day}`] ?? null, overlap: !!shift && !e.allDay && e.startMs < shift.endMs && Math.max(e.endMs, e.startMs) > shift.startMs,

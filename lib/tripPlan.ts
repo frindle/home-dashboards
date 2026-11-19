@@ -25,6 +25,7 @@ export const GAP_EXTRA_MS = 3_600_000;
 export const DEPART_SLACK_MIN_MS = 15 * 60_000;
 export const DEPART_SLACK_FRACTION = 0.2;
 export const ALL_DAY_START_HOUR = 8;
+export const ASSUMED_LEAD_MIN = 30;       // an event with no place: leave this long before it starts
 
 const MIN_MS = 60_000;
 
@@ -57,6 +58,9 @@ export interface TripEvent {
   multiDay: boolean;
   tag: HomeTag | null;
   point: LatLon | null;     // null = could not be placed
+  // Round-trip miles to assume when there is no place (an extra calendar's event with no location):
+  // counted as one round trip from home, overlapping ones once (the largest).
+  assumedMiles?: number;
 }
 
 // route(a, b, atMs) -> miles and seconds (traffic included) or null.
@@ -81,7 +85,7 @@ export interface PlannedStop {
   uid?: string;
   miles: number;                    // the leg into this stop
   after: 'home' | 'straight' | 'end';   // what follows this stop
-  rule: 'tag' | 'toggle' | 'gap' | 'near' | 'overlap' | 'last' | null;
+  rule: 'tag' | 'toggle' | 'gap' | 'near' | 'overlap' | 'last' | 'assumed' | null;
 }
 
 export interface TripDay {
@@ -116,12 +120,17 @@ export async function planTripDay(inp: TripDayInput): Promise<TripDay | null> {
   const tagOf = (e: TripEvent): HomeTag | null => inp.toggles[choiceKey(e.uid, day)] ?? e.tag;
 
   const live: TripEvent[] = [];
+  const assumed: TripEvent[] = [];
   for (const e of inp.events) {
     if (inp.choices[choiceKey(e.uid, day)] === 'skip') continue;
-    if (!e.point) { out.unplaced.push(e.uid); continue; }
+    if (!e.point) {
+      if (e.assumedMiles && e.assumedMiles > 0) assumed.push(e); else out.unplaced.push(e.uid);
+      continue;
+    }
     live.push(e);
   }
   live.sort((a, b) => startOf(a) - startOf(b));
+  assumed.sort((a, b) => startOf(a) - startOf(b));
 
   let fail = false;
   const go = async (a: LatLon, b: LatLon, atMs: number): Promise<Leg> => {
@@ -205,6 +214,30 @@ export async function planTripDay(inp: TripDayInput): Promise<TripDay | null> {
     stop.after = goHome ? 'home' : 'straight';
     if (goHome) { totalMiles += (await go(pos, home, s.endMs)).miles; pos = home; }
   }
+
+  // Events with no place: one assumed round trip from home each, except that events overlapping in
+  // time share one trip (the largest), so the same appointment in two feeds is not counted twice.
+  // On a work day one that overlaps the shift is flagged like any other until it has a choice.
+  let cluster: { end: number; miles: number; first: TripEvent } | null = null;
+  const flush = () => {
+    if (!cluster) return;
+    totalMiles += cluster.miles;
+    out.stops.push({ kind: 'event', uid: cluster.first.uid, miles: cluster.miles, after: 'home', rule: 'assumed' });
+    const at = startOf(cluster.first);
+    homeDeparts.push(at - ASSUMED_LEAD_MIN * MIN_MS);
+    cluster = null;
+  };
+  for (const e of assumed) {
+    if (sh && !e.allDay && e.startMs < sh.endMs && endOf(e) > sh.startMs && inp.choices[choiceKey(e.uid, day)] !== 'going') out.overlaps.push(e.uid);
+    if (cluster && startOf(e) < cluster.end) {
+      cluster.end = Math.max(cluster.end, endOf(e));
+      cluster.miles = Math.max(cluster.miles, e.assumedMiles!);
+    } else {
+      flush();
+      cluster = { end: Math.max(endOf(e), startOf(e) + 1), miles: e.assumedMiles!, first: e };
+    }
+  }
+  flush();
 
   // Work days: what the day's route adds to the plain commute.
   let commuteMiles = 0;

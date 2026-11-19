@@ -48,6 +48,16 @@ export function forecastCalConfig(env: Record<string, string | undefined>): CalC
   };
 }
 
+// Why the sync does nothing, in words, or null when it is on. The sync used to stay silent when
+// unconfigured, so a missing variable looked the same as a working calendar with nothing to show.
+export function forecastCalOffReason(env: Record<string, string | undefined>): string | null {
+  if (forecastCalConfig(env)) return null;
+  const url = env.FORECAST_CAL_URL?.trim(), name = env.FORECAST_CAL_NAME?.trim();
+  if (!url && !name) return 'off: set FORECAST_CAL_NAME or FORECAST_CAL_URL to publish the forecast calendar';
+  if (!url && !env.PERSONAL_CAL_URL?.trim()) return 'off: FORECAST_CAL_NAME needs PERSONAL_CAL_URL for the server (or set FORECAST_CAL_URL)';
+  return 'off: the calendar URL is not a valid URL';
+}
+
 const unxml = (s: string) => s.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&#13;/g, '\r').replace(/&amp;/g, '&');
 const tag = (xml: string, name: string) => new RegExp(`<(?:\\w+:)?${name}(?:\\s[^>]*)?>([\\s\\S]*?)</(?:\\w+:)?${name}>`).exec(xml)?.[1];
 const responses = (xml: string) => xml.match(/<(?:\w+:)?response[\s>][\s\S]*?<\/(?:\w+:)?response>/g) ?? [];
@@ -155,6 +165,9 @@ export async function syncForecastCalendar(deps: SyncDeps): Promise<SyncResult> 
     const firstDate = want.length ? want[0].date : null;
     if (firstDate) for (const k of Object.keys(state.days)) if (k < firstDate) delete state.days[k];
     await deps.writeState(state);
+    if (r.created || r.updated || r.errors || r.conflicts) {
+      console.log(`[forecast-cal] ${r.created} created, ${r.updated} updated, ${r.edits} edits, ${r.conflicts} conflicts, ${r.errors} errors`);
+    }
     return { ...r, status: r.errors ? 'error' : 'ok' };
   } catch (e) {
     console.error('[forecast-cal] failed:', e instanceof Error ? e.name : 'error');
