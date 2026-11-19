@@ -109,3 +109,11 @@ test('412 counts as a conflict, a failed read and a thrown error never throw', a
   assert.equal((await syncForecastCalendar(boom.deps)).status, 'error');
   assert.equal((await syncForecastCalendar({ ...boom.deps, env: {} })).status, 'off');
 });
+
+test('off reasons say which variable is missing (the empty-calendar repro: it used to be silent)', async () => {
+  const { forecastCalOffReason } = await import('./forecastCalSync.ts');
+  assert.match(forecastCalOffReason({})!, /FORECAST_CAL_NAME or FORECAST_CAL_URL/);
+  assert.match(forecastCalOffReason({ FORECAST_CAL_NAME: 'EV Charge Forecast' })!, /PERSONAL_CAL_URL/);
+  assert.match(forecastCalOffReason({ FORECAST_CAL_URL: 'not a url' })!, /not a valid URL/);
+  assert.equal(forecastCalOffReason(ENV), null);
+});

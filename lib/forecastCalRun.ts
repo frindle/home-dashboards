@@ -5,7 +5,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { chargeCalendarView, forecastDays } from '@/lib/chargeCalendarRun';
 import type { SyncState } from '@/lib/forecastCalEvents';
-import { forecastCalConfig, syncForecastCalendar, type FetchLike } from '@/lib/forecastCalSync';
+import { forecastCalConfig, forecastCalOffReason, syncForecastCalendar, type FetchLike } from '@/lib/forecastCalSync';
 import { runRivianChargeControl } from '@/lib/rivianChargeControl';
 import { mutateTripChoices } from '@/lib/tripStore';
 import { localDayNumber } from '@/lib/chargePlan';
@@ -28,9 +28,14 @@ async function writeState(s: SyncState): Promise<void> {
 
 let lastMs = 0;
 let running = false;
+let offLogged = false;
 
 export async function runForecastCalendarSync(): Promise<void> {
-  if (running || !forecastCalConfig(process.env)) return;
+  if (!forecastCalConfig(process.env)) {
+    if (!offLogged) { offLogged = true; console.log('[forecast-cal]', forecastCalOffReason(process.env)); }
+    return;
+  }
+  if (running) return;
   const now = Date.now();
   if (now - lastMs < SYNC_INTERVAL_MS) return;
   lastMs = now;
