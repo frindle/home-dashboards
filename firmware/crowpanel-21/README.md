@@ -131,3 +131,17 @@ screen and colours, knob direction and clicks per step, the press (PCF8574 P5, a
 setup, the backlight dimming, and that the panel recovers after the dashboard restarts.
 
 Not included on purpose: Plex streams, queue depth, weather, Studio temperatures, a Lab section (no existing source).
+
+## Lab page (optional feed section)
+
+Turned on by `PANEL_LAB_TOKEN` on the dashboard (optional `PANEL_LAB_STALE_S`, default 1200). Without the token the route
+answers 404, the feed has no `lb` key and the panel hides the Lab topic. No reporter is shipped; anything that can send
+an HTTP request can post this (the full contract is at the top of `lib/panelLab.ts`):
+
+    POST /api/panel/lab        Authorization: Bearer <PANEL_LAB_TOKEN>
+    { "v": 1,
+      "items": [ { "text": "Approve model swap", "since": 1766250000, "warn": true } ],
+      "queue": { "total": 7, "running": 2 } }
+
+Up to 6 items, text 1 to 28 characters, `since` (epoch seconds or ISO date) or `age_s` (seconds already waiting), optional
+`warn`. Body at most 1024 bytes. The feed carries it as `lb: { i: [{ t, a, w }], q, r, age, st }`.

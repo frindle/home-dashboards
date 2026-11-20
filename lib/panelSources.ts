@@ -1,6 +1,7 @@
 // IO for the panel feed (GET /api/panel): reads bloom-ledger, network-bandwidth-monitor, InfluxDB and the Rivian night
 // plan, and hands each result to the pure parsers in lib/panelFeed.ts. Read-only: nothing here writes anywhere.
 // Hosts and tokens come from the environment (see .env.example, "Panel feed"); a missing URL makes that section ok=0.
+import { labSection, parseLabConfig, readLab } from '@/lib/panelLab';
 import { parseUsageConfig, readUsage, usageSection } from '@/lib/panelUsage';
 import { rivianNightPlan } from '@/lib/rivianNightPlan';
 import {
@@ -125,4 +126,10 @@ async function claudeUsage(): Promise<Section> {
   return usageSection(readUsage(), usageCfg?.staleMs ?? 0, Date.now());
 }
 
-export const panelSources: Sources = { bl: darkbloom, nw: network, sd: storage, ev: evTonight, ...(usageCfg ? { us: claudeUsage } : {}) };
+// Lab: items waiting on a person, POSTed to /api/panel/lab. Only part of the feed when PANEL_LAB_TOKEN is set.
+const labCfg = parseLabConfig(process.env);
+async function lab(): Promise<Section> {
+  return labSection(readLab(), labCfg?.staleMs ?? 0, Date.now());
+}
+
+export const panelSources: Sources = { bl: darkbloom, nw: network, sd: storage, ev: evTonight, ...(usageCfg ? { us: claudeUsage } : {}), ...(labCfg ? { lb: lab } : {}) };
