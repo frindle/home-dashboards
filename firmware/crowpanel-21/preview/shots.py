@@ -137,6 +137,40 @@ for n in (1, 7, 8, 12):
 
 # ---- shots: (slug, feed, actions, description, age seconds since the feed arrived, options)
 S = []
+# design v4 feeds (made-up data)
+def v4():
+    d = design()
+    d["bl"]["md"] = "gemma-3-27b-it"
+    ms = d["bl"]["m"]
+    for m, cl, ij in zip(ms, ["Alpha", "Alpha", "Beta", "Gamma"], [4, 2, 1, 0]):
+        m["cl"] = cl; m["ij"] = ij
+    return d
+
+lab = v4()
+lab["lb"] = dict(ok=1, st=0, age=30, q=7, r=2, i=[dict(t="Approve model swap", a=7200, w=1), dict(t="Review eval results", a=18000),
+    dict(t="Approve training run", a=900), dict(t="Confirm disk cleanup", a=900), dict(t="Pick prompt variant", a=86400), dict(t="Renew API key", a=300)])
+F["labfull"] = lab
+c3 = v4(); F["clusters3"] = c3
+c2 = v4()
+for m in c2["bl"]["m"]: m["cl"] = "Alpha" if m["n"] in ("studio-a", "mini-c") else "Beta"
+F["clusters2"] = c2
+ln = v4()
+ln["bl"]["m"][0]["n"] = "Studio Ultra long name"; ln["bl"]["m"][1]["n"] = "Mini in the lab room"
+F["longnames"] = ln
+fast = v4(); fast["nw"]["l"][0]["d"] = 1234.0; fast["nw"]["l"][0]["u"] = 940.0
+F["fastlink"] = fast
+ga = v4(); ga["lvl"] = "r"
+ga["al"] = [dict(k="wan", tp="nw", sv="r", t="No traffic on 4 links", w="Cox - Starlink - Fiber - LTE", c=4, u="links", a=720)]; ga["ac"] = 1
+F["groupedalert"] = ga
+wa = v4(); wa["lvl"] = "a"
+wa["al"] = [dict(k="full:disk1", tp="sd", sv="a", t="Disk disk1 is almost full at 96%", w="Array disk 1 of 6", a=3000)]; wa["ac"] = 1
+F["warnalert"] = wa
+evu = v4(); evu["ev"]["up"] = dict(p=64, f="2026.42", t="2026.46")
+F["evupdating"] = evu
+stale = v4()
+for k in ("bl", "nw", "sd", "ev"): stale[k]["st"] = 1; stale[k]["sa"] = 1080
+F["stale18"] = stale
+
 def shot(slug, feed, actions="", desc="", age=5, opts=""):
     S.append((slug, feed, actions, desc, age, opts))
 
@@ -252,6 +286,21 @@ shot("alerts-7-done", "alerts7x", "L R+ R+ R+ R+ R+ R+ R+", "7 alerts: the Done 
 shot("alerts-8", "alerts8x", "L R+ R+", "8 alerts: no dots, 3 OF 8 counter")
 shot("alerts-12", "alerts12x", "L", "12 alerts: no dots, 1 OF 12 counter")
 shot("alerts-12-done", "alerts12x", "L " + " ".join(["R+"] * 12), "12 alerts: the Done card without dots", age=30)
+
+# design v4
+shot("v4-lab", "labfull", at("lab"), "Lab overview: waiting, urgent pill, AI queue")
+shot("v4-lab-detail", "labfull", at("lab", True), "Lab detail: 6 items and AI queue")
+shot("v4-darkbloom-names", "longnames", "", "Darkbloom overview, long Mac names wrap and are never cut")
+shot("v4-darkbloom-clusters2", "clusters2", at("bl", True), "Darkbloom detail, 2 clusters with blue bars")
+shot("v4-darkbloom-clusters3", "clusters3", at("bl", True), "Darkbloom detail, 3 clusters, DARKBLOOM label")
+shot("v4-network-1g", "fastlink", at("nw"), "Network overview with 1.2 G")
+shot("v4-network-1g-detail", "fastlink", at("nw", True), "Network detail with 1.2 G")
+shot("v4-alert-grouped", "groupedalert", "", "Grouped alert card, all links down in red")
+shot("v4-warning-ring", "warnalert", at("nw"), "A warning gives an amber ring and marker on every screen")
+shot("v4-ev-updating", "evupdating", at("ev"), "EV overview, Updating 64%")
+shot("v4-ev-updating-detail", "evupdating", at("ev", True), "EV detail, SOFTWARE UPDATE")
+shot("v4-old-pill", "stale18", "", "Old data pill, UPDATED 18 MIN AGO")
+shot("v4-old-pill-storage", "stale18", at("sd"), "Old data pill on Storage")
 
 def main(out):
     fd = os.path.join(out, "feeds")

@@ -21,10 +21,10 @@ test('red and amber alerts per topic, with plain messages', () => {
     sd: ok({ arr: 'STOPPED', pe: 2, na: 1, d: [{ n: 'cache', r: 'c', u: 93 }, { n: 'disk1', r: 'd', u: 97 }] }),
     ev: ok({ sf: 1 }),
   });
-  assert.deepEqual(keys(l), ['r:array', 'r:cache', 'r:parity', 'r:unraid', 'r:silent:m4', 'a:full', 'a:ev']);
-  assert.match(l.find((a) => a.k === 'array')!.m, /STOPPED/);
-  assert.match(l.find((a) => a.k === 'silent:m4')!.m, /m4 has stopped serving/);
-  assert.ok(l.every((a) => a.m.length <= ALERT_MSG_MAX && a.m.length > 10));
+  assert.deepEqual(keys(l), ['r:array', 'r:cache', 'r:parity', 'r:unraid', 'r:silent:m4', 'a:full:disk1', 'a:ev']);
+  assert.match(l.find((a) => a.k === 'array')!.m!, /STOPPED/);
+  assert.match(l.find((a) => a.k === 'silent:m4')!.m!, /m4 has stopped serving/);
+  assert.ok(l.every((a) => a.m!.length <= ALERT_MSG_MAX && a.m!.length > 10));
 });
 
 test('amber variants and the bloom alert only when no Mac is silent', () => {
@@ -47,8 +47,8 @@ test('thresholds: array full, cache, disk, defaults and env overrides', () => {
   assert.deepEqual(keys(collectAlerts({ ...G, sd: sd(750) }, cfg)), ['a:arrayfull']);
   assert.deepEqual(keys(collectAlerts({ ...G, sd: sd(850) }, cfg)), ['r:arrayfull']);
   const s2 = ok({ arr: 'STARTED', d: [{ n: 'cache', r: 'c', u: 55 }, { n: 'disk2', r: 'd', u: 86 }, { n: 'parity', r: 'p', u: 99 }] });
-  assert.deepEqual(keys(collectAlerts({ ...G, sd: s2 }, cfg)), ['a:cache', 'a:full']);
-  assert.match(collectAlerts({ ...G, sd: s2 }, cfg).find((a) => a.k === 'full')!.m, /disk2/);   // parity is never "full"
+  assert.deepEqual(keys(collectAlerts({ ...G, sd: s2 }, cfg)), ['a:cache', 'a:full:disk2']);
+  assert.match(collectAlerts({ ...G, sd: s2 }, cfg).find((a) => a.k === 'full:disk2')!.m!, /disk2/);   // parity is never "full"
 });
 
 test('config: garbage falls back to defaults and warn stays below red', () => {
@@ -62,13 +62,13 @@ test('config: garbage falls back to defaults and warn stays below red', () => {
 
 test('network: all idle, failover, data cap', () => {
   const nw = (l: unknown[], extra = {}) => ok({ src: 'wan', l, ...extra });
-  assert.deepEqual(keys(collectAlerts({ ...G, nw: nw([{ n: 'Cox', d: 0, u: 0 }]) })), ['a:wan']);
+  assert.deepEqual(keys(collectAlerts({ ...G, nw: nw([{ n: 'Cox', d: 0, u: 0 }]) })), ['r:wan']);
   const two = [{ n: 'Cox', d: 0, u: 0 }, { n: 'Starlink', d: 30, u: 2 }];
   assert.deepEqual(collectAlerts({ ...G, nw: nw(two) }), []);                       // off until a primary is named
   const cfg = parseAlertConfig({ PANEL_WAN_PRIMARY: 'cox' });
   const fo = collectAlerts({ ...G, nw: nw(two) }, cfg);
   assert.deepEqual(keys(fo), ['a:failover']);
-  assert.match(fo[0].m, /Cox looks down.*Starlink/);
+  assert.match(fo[0].m!, /Cox looks down.*Starlink/);
   assert.deepEqual(collectAlerts({ ...G, nw: nw([{ n: 'Cox', d: 4, u: 0 }, { n: 'Starlink', d: 0, u: 0 }]) }, cfg), []);
 });
 
@@ -78,7 +78,7 @@ test('network cap percentages', () => {
   assert.deepEqual(collectAlerts({ ...G, nw: nw(790) }, cfg), []);
   assert.deepEqual(keys(collectAlerts({ ...G, nw: nw(800) }, cfg)), ['a:cap']);
   assert.deepEqual(keys(collectAlerts({ ...G, nw: nw(960) }, cfg)), ['r:cap']);
-  assert.match(collectAlerts({ ...G, nw: nw(960) }, cfg)[0].m, /96%/);
+  assert.match(collectAlerts({ ...G, nw: nw(960) }, cfg)[0].m!, /96%/);
 });
 
 test('Claude usage alerts: thresholds, windows, per model, reset text', () => {
@@ -88,7 +88,7 @@ test('Claude usage alerts: thresholds, windows, per model, reset text', () => {
   assert.deepEqual(keys(l), ['r:usage:5h', 'r:usage:opus', 'a:usage:wk']);
   assert.equal(l[0].tp, 'us');
   assert.equal(l[0].m, 'Claude 5-hour usage is 96%. Resets in 80 min.');
-  assert.match(l.find((a) => a.k === 'usage:wk')!.m, /weekly usage is 82%. Resets in 2 d 7 h/);
+  assert.match(l.find((a) => a.k === 'usage:wk')!.m!, /weekly usage is 82%. Resets in 2 d 7 h/);
   const cfg = parseAlertConfig({ PANEL_USAGE_WARN_PCT: '40', PANEL_USAGE_RED_PCT: '50' });
   assert.deepEqual(keys(collectAlerts({ ...G, us: us({ h5: { p: 45 } }) }, cfg)), ['a:usage:5h']);
 });
@@ -100,15 +100,15 @@ test('durations read plainly', () => {
 
 test('order: red first, then storage, Darkbloom, network, usage, EV', () => {
   const l = sortAlerts([
-    { k: 'ev', tp: 'ev', sv: 'a', m: 'x' }, { k: 'usage:5h', tp: 'us', sv: 'r', m: 'x' }, { k: 'wan', tp: 'nw', sv: 'a', m: 'x' },
-    { k: 'silent:m4', tp: 'bl', sv: 'r', m: 'x' }, { k: 'cache', tp: 'sd', sv: 'r', m: 'x' }, { k: 'bloom', tp: 'bl', sv: 'a', m: 'x' },
+    { k: 'ev', tp: 'ev', sv: 'a', t: 'x', w: 'x', m: 'x' }, { k: 'usage:5h', tp: 'us', sv: 'r', t: 'x', w: 'x', m: 'x' }, { k: 'wan', tp: 'nw', sv: 'a', t: 'x', w: 'x', m: 'x' },
+    { k: 'silent:m4', tp: 'bl', sv: 'r', t: 'x', w: 'x', m: 'x' }, { k: 'cache', tp: 'sd', sv: 'r', t: 'x', w: 'x', m: 'x' }, { k: 'bloom', tp: 'bl', sv: 'a', t: 'x', w: 'x', m: 'x' },
   ]);
   assert.deepEqual(keys(l), ['r:cache', 'r:silent:m4', 'r:usage:5h', 'a:bloom', 'a:wan', 'a:ev']);
 });
 
 test('since-time: starts at first sight, survives rebuilds, resets when the alert clears', () => {
   const since = new Map<string, number>();
-  const A = (k: string): Alert => ({ k, tp: 'sd', sv: 'r', m: 'x' });
+  const A = (k: string): Alert => ({ k, tp: 'sd', sv: 'r', t: 'x', w: 'x', m: 'x' });
   assert.equal(trackSince(since, [A('cache')], 1_000_000)[0].a, 0);
   assert.equal(trackSince(since, [A('cache'), A('array')], 1_000_000 + 125_000)[0].a, 125);
   assert.equal(trackSince(since, [A('cache'), A('array')], 1_000_000 + 125_000)[1].a, 0);
@@ -117,7 +117,7 @@ test('since-time: starts at first sight, survives rebuilds, resets when the aler
 });
 
 test('cap: most important kept, true count reported', () => {
-  const many = Array.from({ length: 15 }, (_, i): Alert => ({ k: `k${i}`, tp: 'sd', sv: 'r', m: 'x' }));
+  const many = Array.from({ length: 15 }, (_, i): Alert => ({ k: `k${i}`, tp: 'sd', sv: 'r', t: 'x', w: 'x', m: 'x' }));
   const c = capAlerts(many);
   assert.equal(c.al.length, MAX_ALERTS); assert.equal(c.ac, 15);
   assert.equal(capAlerts(many.slice(0, 3)).ac, undefined);
@@ -191,4 +191,14 @@ test('feed cache: alert age follows the clock across cache rebuilds, thresholds 
   assert.equal(JSON.parse(await get()).al[0].a, 0);
   t += 60_000;
   assert.equal(JSON.parse(await get()).al[0].a, 60);
+});
+
+test('same-kind alerts become one grouped card; every link idle is red with the places on line 2', () => {
+  const l = collectAlerts({ ...G, nw: ok({ src: 'wan', l: [{ n: 'Cox', d: 0, u: 0 }, { n: 'Starlink', d: 0, u: 0 }] }) });
+  const w = l.find((a) => a.k === 'wan')!;
+  assert.equal(w.sv, 'r'); assert.match(w.t, /^No traffic on 2 links/); assert.equal(w.w, 'Cox · Starlink');
+  const d = collectAlerts({ ...G, sd: ok({ arr: 'STARTED', d: [{ n: 'disk1', r: 'd', u: 96 }, { n: 'disk2', r: 'd', u: 97 }] }) });
+  const full = d.filter((a) => a.k.startsWith('full'));
+  assert.equal(full.length, 1); assert.equal(full[0].c, 2); assert.ok(full[0].t.length <= 40 && full[0].w.length <= 64);
+  assert.ok(l.every((a) => a.t && a.w));
 });

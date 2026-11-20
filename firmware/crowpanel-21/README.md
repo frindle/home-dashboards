@@ -43,6 +43,14 @@ show as "old data"; a window whose reset time has passed is dropped. Thresholds 
 - One section down: "NO DATA" on that page only. A section the dashboard is serving from its last-good copy shows
   "old data" in amber. Network with only Unraid traffic says so in the footer.
 
+### Short names and feed keys
+`PANEL_SHORT_NAMES="studio-m4-ultra=Studio,Fiber 10G=Fiber,disk12=D12"` (on the dashboard) sets the name shown for a Mac,
+an internet link or a disk. A name with no entry is shown in full (wrapped, never cut mid-word).
+Keys added to the feed for the v4 screens: `sa` (seconds since a section's data was fresh; the "UPDATED N MIN AGO" pill
+shows after 10 min), Mac `ij` (inference jobs) and `cl` (cluster), alert `t` (title) / `w` (where, line 2) / `c` (count)
+/ `u` (unit) for grouped alerts, and EV `up` `{p,f,t}` for a Rivian software update (shown inside EV).
+Lab (up to 6 items waiting plus the AI queue total and running) stays hidden until something posts it.
+
 ## Set up
 1. `cp secrets.example.yaml secrets.yaml` and fill in `panel_url` (the dashboard address, port and `/api/panel`),
    `ota_password` and `ap_password` (made-up strings). `secrets.yaml` is gitignored.

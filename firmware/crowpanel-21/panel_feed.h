@@ -17,7 +17,7 @@ namespace panel {
 
 // Same limits as MAX_MACS / MAX_LINKS / MAX_DISKS in lib/panelFeed.ts. More Macs than this are ignored.
 constexpr int MAX_MACS = 4, MAX_LINKS = 12, MAX_DISKS = 16, MAX_RR = 4, MAX_WHY = 3;
-constexpr int MAX_LAB = 4;
+constexpr int MAX_LAB = 6;
 constexpr int MAX_AL = 12, MAX_US_MODELS = 4;   // MAX_ALERTS / MAX_MODELS in lib/panelAlerts.ts, lib/panelUsage.ts
 constexpr int FEED_VERSION = 1;
 
@@ -28,9 +28,9 @@ inline void cp(char *dst, size_t n, const char *src) {
 }
 
 struct Mac {
-  char n[16] = "", s[14] = "";
+  char n[16] = "", s[14] = "", cl[10] = "";   // cl: cluster the Mac belongs to ("" = none)
   bool sl = false, on = false;
-  int w = -1, td = -1, tm = -1, jobs = -1, age = -1;
+  int w = -1, td = -1, tm = -1, jobs = -1, ij = -1, age = -1;   // jobs: sandbox jobs now, ij: inference jobs now
 };
 struct Link {
   char n[12] = "";
@@ -47,6 +47,8 @@ struct Disk {
 // One priority alert from the feed's "al" list (already ordered by priority). `tp` is the topic: bl nw sd ev us.
 struct Alert {
   char k[24] = "", tp[3] = "", sv = 'a', m[92] = "";   // sv: 'r' red, 'a' amber
+  char t[44] = "", w[68] = "", u[10] = "";             // t: line 1 (what), w: line 2 (where), u: noun of a group ("links")
+  int c = 0;                                           // items in a group card, 0 = a single alert
   uint32_t a = 0;                                      // seconds active when the feed was built
 };
 
@@ -61,20 +63,25 @@ struct Feed {
   int nwhy = 0;
   int br = -1;               // backlight percent from the server's night schedule, -1 = none
 
-  struct Bl { bool ok = false, st = false; int n = 0, al = 0; char md[20] = ""; Mac m[MAX_MACS]; } bl;   // md: the account's model, optional (the server does not send it yet)
-  struct Nw { bool ok = false, st = false, wan = false, rolling = false; int n = 0; Link l[MAX_LINKS]; } nw;
+  struct Bl { bool ok = false, st = false; int sa = -1, n = 0, al = 0; char md[20] = ""; Mac m[MAX_MACS]; } bl;   // md: the account's model, optional (the server does not send it yet)
+  struct Nw { bool ok = false, st = false, wan = false, rolling = false; int sa = -1, n = 0; Link l[MAX_LINKS]; } nw;
   struct Sd {
     bool ok = false, st = false;
+    int sa = -1;   // seconds old when st is set (the feed's "sa"); -1 = not said
     int ts = 0, tu = 0, nd = 0, spin = 0, par = 0, pp = 0, pe = 0, na = 0, nwn = 0, n = 0;
     char arr[14] = "";
     Disk d[MAX_DISKS];
   } sd;
   struct Ev {
     bool ok = false, st = false;
+    int sa = -1;
     int plug = -1, soc = -1, lim = -1, amps = -1, tgt = -1, sf = 0, wk = -1;
     float kwh = -1, h = -1;
     int rg = -1, ch = -1, mf = -1;   // range (miles), charging now (0/1), minutes to the limit (only while charging)
     float kw = -1;                    // charging power
+    bool up = false;                  // a Rivian software update is installing
+    int upp = -1;                     // its percent, -1 = the car does not say
+    char upf[12] = "", upt[12] = "";  // versions: from, to
   } ev;
   // Lab: things waiting on the user plus the model queue. `present` is false without the key (no Lab topic).
   struct Lab {
@@ -86,6 +93,7 @@ struct Feed {
   // Claude usage. `present` is false when the dashboard has the feature off (the key is absent): no page, no topic.
   struct Us {
     bool present = false, ok = false, st = false;
+    int sa = -1;
     struct W { bool has = false; int p = 0, r = -1; } h5, wk;   // percent used, seconds to reset (-1 unknown)
     struct M { char n[12] = ""; int p = 0, r = -1; } m[MAX_US_MODELS];
     int nm = 0, lm = -1;     // lm: seconds until the 5-hour limit at the current pace, -1 = not reached before reset
@@ -130,7 +138,7 @@ inline bool parse_feed(JsonObjectConst root, Feed &out, uint32_t now_ms) {
   // ---- Darkbloom
   JsonObjectConst bl = root["bl"];
   f.bl.ok = ok_of(bl);
-  f.bl.st = bl["st"].as<int>() == 1;
+  f.bl.st = bl["st"].as<int>() == 1; f.bl.sa = geti(bl["sa"]);
   f.bl.al = geti(bl["al"], 0);
   cp(f.bl.md, sizeof f.bl.md, bl["md"] | "");
   if (f.bl.ok) {
@@ -141,14 +149,15 @@ inline bool parse_feed(JsonObjectConst root, Feed &out, uint32_t now_ms) {
       cp(m.s, sizeof m.s, o["s"] | "");
       m.sl = o["sl"].as<int>() == 1;
       m.on = o["on"].as<int>() == 1;
-      m.w = geti(o["w"]); m.td = geti(o["td"]); m.tm = geti(o["tm"]); m.jobs = geti(o["jobs"]); m.age = geti(o["age"]);
+      m.w = geti(o["w"]); m.td = geti(o["td"]); m.tm = geti(o["tm"]); m.jobs = geti(o["jobs"]); m.ij = geti(o["ij"]); m.age = geti(o["age"]);
+      cp(m.cl, sizeof m.cl, o["cl"] | "");
     }
   }
 
   // ---- Network
   JsonObjectConst nw = root["nw"];
   f.nw.ok = ok_of(nw);
-  f.nw.st = nw["st"].as<int>() == 1;
+  f.nw.st = nw["st"].as<int>() == 1; f.nw.sa = geti(nw["sa"]);
   f.nw.wan = strcmp(nw["src"] | "", "wan") == 0;
   f.nw.rolling = strcmp(nw["tp"] | "r", "c") != 0;
   if (f.nw.ok) {
@@ -170,7 +179,7 @@ inline bool parse_feed(JsonObjectConst root, Feed &out, uint32_t now_ms) {
   // ---- Storage
   JsonObjectConst sd = root["sd"];
   f.sd.ok = ok_of(sd);
-  f.sd.st = sd["st"].as<int>() == 1;
+  f.sd.st = sd["st"].as<int>() == 1; f.sd.sa = geti(sd["sa"]);
   if (f.sd.ok) {
     f.sd.ts = geti(sd["tot"]["s"], 0); f.sd.tu = geti(sd["tot"]["u"], 0);
     f.sd.nd = geti(sd["nd"], 0); f.sd.spin = geti(sd["spin"], 0);
@@ -190,12 +199,15 @@ inline bool parse_feed(JsonObjectConst root, Feed &out, uint32_t now_ms) {
   // ---- EV
   JsonObjectConst ev = root["ev"];
   f.ev.ok = ok_of(ev);
-  f.ev.st = ev["st"].as<int>() == 1;
+  f.ev.st = ev["st"].as<int>() == 1; f.ev.sa = geti(ev["sa"]);
   if (f.ev.ok) {
     f.ev.plug = geti(ev["plug"]); f.ev.soc = geti(ev["soc"]); f.ev.lim = geti(ev["lim"]); f.ev.amps = geti(ev["amps"]);
     f.ev.tgt = geti(ev["tgt"]); f.ev.sf = geti(ev["sf"], 0); f.ev.wk = geti(ev["wk"]);
     f.ev.kwh = getf(ev["kwh"]); f.ev.h = getf(ev["h"]);
     f.ev.rg = geti(ev["rg"]); f.ev.ch = geti(ev["ch"]); f.ev.mf = geti(ev["mf"]); f.ev.kw = getf(ev["kw"]);
+    JsonObjectConst up = ev["up"];
+    f.ev.up = !up.isNull();
+    if (f.ev.up) { f.ev.upp = geti(up["p"]); cp(f.ev.upf, sizeof f.ev.upf, up["f"] | ""); cp(f.ev.upt, sizeof f.ev.upt, up["t"] | ""); }
   }
 
   // ---- Lab (absent = no topic)
@@ -217,7 +229,7 @@ inline bool parse_feed(JsonObjectConst root, Feed &out, uint32_t now_ms) {
   JsonObjectConst us = root["us"];
   f.us.present = !us.isNull();
   f.us.ok = f.us.present && ok_of(us);
-  f.us.st = us["st"].as<int>() == 1;
+  f.us.st = us["st"].as<int>() == 1; f.us.sa = geti(us["sa"]);
   if (f.us.ok) {
     auto win = [](JsonObjectConst w, Feed::Us::W &o) {
       o.has = !w.isNull() && w["p"].is<int>();
@@ -242,6 +254,8 @@ inline bool parse_feed(JsonObjectConst root, Feed &out, uint32_t now_ms) {
     cp(a.tp, sizeof a.tp, o["tp"] | "");
     a.sv = strcmp(o["sv"] | "a", "r") == 0 ? 'r' : 'a';
     cp(a.m, sizeof a.m, o["m"] | "");
+    cp(a.t, sizeof a.t, o["t"] | ""); cp(a.w, sizeof a.w, o["w"] | ""); cp(a.u, sizeof a.u, o["u"] | "");
+    a.c = geti(o["c"], 0);
     int s = geti(o["a"], 0);
     a.a = s > 0 ? (uint32_t) s : 0;
     f.nal++;

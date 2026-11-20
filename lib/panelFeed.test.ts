@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   PANEL_MAX_BYTES, LAST_GOOD_MAX_MS, MAX_DISKS, MAX_LINKS, MAX_MACS, alertLevel, brightnessAt, buildPanel, earnedCents, fitBody,
   makePanelCache, parseBloom, parseDimConfig, parseEv, parseFluxCsv, parseNetTotals, parseStorage, parseTotalsMap,
-  parseUnraidNet, parseWan, withExtraLink, withNetTotals, type PanelBody, type Section, type Sources,
+  parseShortNames, parseUnraidNet, parseWan, shortName, withExtraLink, withNetTotals, type PanelBody, type Section, type Sources,
 } from './panelFeed.ts';
 
 const NOW = Date.parse('2026-11-12T20:00:00Z');
@@ -180,7 +180,7 @@ test('alert level: red for a silent Mac, a stopped array, parity errors or an un
   assert.equal(alertLevel({ ...g, sd: ok({ arr: 'STARTED', nwn: 1 }) }).lvl, 'a');
   assert.equal(alertLevel({ ...g, sd: ok({ arr: 'STARTED', d: [{ n: 'disk3', u: 96 }] }) }).lvl, 'a');
   assert.equal(alertLevel({ ...g, bl: ok({ m: [], al: 1 }) }).lvl, 'a'); // ring snapshot stale
-  assert.equal(alertLevel({ ...g, nw: ok({ src: 'wan', l: [{ d: 0, u: 0 }] }) }).lvl, 'a');
+  assert.equal(alertLevel({ ...g, nw: ok({ src: 'wan', l: [{ d: 0, u: 0 }] }) }).lvl, 'r');   // every link idle is red
   assert.equal(alertLevel({ ...g, ev: ok({ sf: 1 }) }).lvl, 'a');
   // cache pool: amber from 80%, red (and jump to storage) from 90%; data disks at 95%+ stay amber
   assert.deepEqual(alertLevel({ ...g, sd: ok({ arr: 'STARTED', d: [{ n: 'cache', r: 'c', u: 85 }] }) }), { lvl: 'a', why: ['cache:85%'] });
@@ -390,4 +390,11 @@ test('fitBody drops totals, then disk temps, then disk rows when a body is over 
   // far over: the disk rows go, the section stays ok
   const c = fitBody(mk(PANEL_MAX_BYTES));
   assert.ok(!('d' in c.sd) && c.sd.ok === 1);
+});
+
+test('short names: configured name wins, full name is the fallback', () => {
+  const n = parseShortNames('studio-m4-ultra=Studio, Fiber 10G=Fiber');
+  assert.equal(shortName(n, 'studio-m4-ultra'), 'Studio');
+  assert.equal(shortName(n, 'unlisted-mac'), 'unlisted-mac');
+  assert.deepEqual(parseShortNames(undefined), {});
 });

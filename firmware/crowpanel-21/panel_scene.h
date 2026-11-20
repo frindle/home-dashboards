@@ -96,6 +96,7 @@ struct Stack {   // a vertical flex column centred on [top, bot]
   float h[24], mt[24], y[24];
   int n = 0;
   int add(float height, float margin = 0) { h[n] = height; mt[n] = margin; return n++; }
+  float total() const { float t = 0; for (int i = 0; i < n; i++) t += mt[i] + h[i]; return t; }
   void go(float top, float bot) {
     float t = 0;
     for (int i = 0; i < n; i++) t += mt[i] + h[i];
@@ -106,6 +107,7 @@ struct Stack {   // a vertical flex column centred on [top, bot]
 
 struct B {
   Scene &s;
+  char oldtxt[32] = "";   // text of the old-data pill for the screen being built (set by make_scene)
   explicit B(Scene &sc_) : s(sc_) {}
   Item *add(uint8_t k) {
     if (s.n >= MAXI) return &s.it[MAXI - 1];
@@ -159,24 +161,79 @@ inline void cut(char *dst, size_t n, const char *src, size_t maxlen) {   // copy
   snprintf(dst, n, "%.*s..", (int) maxlen - 2, src);
 }
 
-inline void dur_hm(char *b, size_t n, int sec) {   // "1 h 48 m", "12 m", "2 d 3 h"
+inline void dur_hm(char *b, size_t n, int sec) {   // "1 h 48 min", "12 min", "2 d 3 h" (never a bare "m")
   if (sec < 0) { snprintf(b, n, "--"); return; }
   int m = (sec + 30) / 60;
-  if (m < 1) snprintf(b, n, "under 1 m");
-  else if (m < 60) snprintf(b, n, "%d m", m);
-  else if (m < 48 * 60) { if (m % 60) snprintf(b, n, "%d h %d m", m / 60, m % 60); else snprintf(b, n, "%d h", m / 60); }
+  if (m < 1) snprintf(b, n, "under 1 min");
+  else if (m < 60) snprintf(b, n, "%d min", m);
+  else if (m < 48 * 60) { if (m % 60) snprintf(b, n, "%d h %d min", m / 60, m % 60); else snprintf(b, n, "%d h", m / 60); }
   else snprintf(b, n, "%d d %d h", m / 1440, (m / 60) % 24);
 }
-inline void dur_short(char *b, size_t n, int sec) {   // "2 h", "1 d", "5 m"
+// An age as the design writes it: "12 MIN", "2 H 14 MIN", "3 D". Never a bare "M". Seconds under a minute read "1 MIN".
+inline void age_text(char *b, size_t n, int sec) {
+  if (sec < 0) { snprintf(b, n, "—"); return; }
+  int m = (sec + 30) / 60;
+  if (m < 1) m = 1;
+  if (m < 60) snprintf(b, n, "%d MIN", m);
+  else if (m < 48 * 60) { if (m % 60) snprintf(b, n, "%d H %d MIN", m / 60, m % 60); else snprintf(b, n, "%d H", m / 60); }
+  else snprintf(b, n, "%d D", m / 1440);
+}
+inline void dur_short(char *b, size_t n, int sec) {   // "2 h", "1 d", "5 min"
   if (sec < 0) { snprintf(b, n, "--"); return; }
-  if (sec < 3600) snprintf(b, n, "%d m", sec / 60 < 1 ? 1 : sec / 60);
+  if (sec < 3600) snprintf(b, n, "%d min", sec / 60 < 1 ? 1 : sec / 60);
   else if (sec < 86400) snprintf(b, n, "%d h", sec / 3600);
   else snprintf(b, n, "%d d", sec / 86400);
 }
 inline void mbps(char *b, size_t n, float v) {
   if (v < 0) snprintf(b, n, "—");
+  else if (v >= 999.5f) snprintf(b, n, "%.1f G", v / 1000);   // 1000 and up reads as Gbps, one decimal
   else if (v < 9.95f) snprintf(b, n, "%.1f", v);
   else snprintf(b, n, "%.0f", v);
+}
+// Rough width of text in px (Montserrat averages), to decide wrapping and columns before drawing.
+inline float txtw(const char *t, Font f, int ls = 0) {
+  static const float per[] = {52.0f, 23.0f, 12.6f, 9.6f};
+  return (float) strlen(t) * (per[f] + ls);
+}
+// Splits `t` into at most `max` lines of whole words that fit `width`. A third line is never started: the last line ends
+// on a whole word and "…". Returns the line count; lines are written to out[i].
+inline int wrap_words(const char *t, Font f, float width, int max, char out[][44]) {
+  int nl = 0;
+  char cur[44] = "";
+  const char *p = t;
+  bool cut = false;
+  while (*p && !cut) {
+    while (*p == ' ') p++;
+    if (!*p) break;
+    const char *q = p;
+    while (*q && *q != ' ') q++;
+    char w[44];
+    size_t wl = (size_t) (q - p) < sizeof w - 1 ? (size_t) (q - p) : sizeof w - 1;
+    memcpy(w, p, wl); w[wl] = 0;
+    {   // a "·" separator stays on the line of the word before it, so a line never starts with a dot
+      const char *p2 = q;
+      while (*p2 == ' ') p2++;
+      if ((unsigned char) p2[0] == 0xC2 && (unsigned char) p2[1] == 0xB7 && (p2[2] == ' ' || !p2[2]) && wl + 3 < sizeof w) { memcpy(w + wl, " \xC2\xB7", 4); w[wl + 3] = 0; wl += 3; q = p2 + 2; }
+    }
+    char tryl[88];
+    snprintf(tryl, sizeof tryl, "%s%s%s", cur, cur[0] ? " " : "", w);
+    if (cur[0] && txtw(tryl, f) > width) {
+      if (nl + 1 >= max) {   // out of lines: end this one on a whole word and "…"
+        cut = true;
+        while (cur[0] && txtw(cur, f) + txtw("…", f) > width) { char *sp = strrchr(cur, ' '); if (!sp) break; *sp = 0; }
+        size_t l = strlen(cur);
+        if (l + 4 < sizeof cur) memcpy(cur + l, "…", 4);
+        break;
+      }
+      cp(out[nl++], 44, cur);
+      cur[0] = 0;
+      snprintf(tryl, sizeof tryl, "%s", w);
+    }
+    cp(cur, sizeof cur, tryl);
+    p = q;
+  }
+  if (cur[0] || nl == 0) cp(out[nl++], 44, cur);
+  return nl;
 }
 inline void data_gb(char *b, size_t n, float g, bool have) {
   if (!have) snprintf(b, n, "—");
@@ -202,15 +259,26 @@ inline uint8_t topic_icon(int t) {
 inline bool link_up(const Feed &f, uint32_t now) { return f.valid && (uint32_t) (now - f.at_ms) <= STALE_MS; }
 
 enum { S_OK = 0, S_OFFLINE, S_NODATA, S_OLD };
+// Data is shown as old (grey values, "UPDATED n MIN AGO") only once it is 10 minutes old; the feed says how old in "sa".
+constexpr int OLD_AFTER_S = 600;
+inline bool old_now(bool st, int sa, const Feed &f, uint32_t now) {
+  if (!st) return false;
+  if (sa < 0) return true;   // an older server that does not say how old: treat as old
+  return sa + (int) ((uint32_t) (now - f.at_ms) / 1000) >= OLD_AFTER_S;
+}
+inline int topic_age(const Feed &f, int t, uint32_t now) {
+  int sa = t == T_BL ? f.bl.sa : t == T_NW ? f.nw.sa : t == T_SD ? f.sd.sa : t == T_EV ? f.ev.sa : t == T_US ? f.us.sa : -1;
+  return sa < 0 ? -1 : sa + (int) ((uint32_t) (now - f.at_ms) / 1000);
+}
 inline int topic_state(const Feed &f, int t, uint32_t now) {
   if (t == T_CLOCK) return S_OK;
   if (!link_up(f, now)) return S_OFFLINE;
   switch (t) {
-    case T_BL: return !f.bl.ok ? S_NODATA : f.bl.st ? S_OLD : S_OK;
-    case T_NW: return !f.nw.ok ? S_NODATA : f.nw.st ? S_OLD : S_OK;
-    case T_SD: return !f.sd.ok ? S_NODATA : f.sd.st ? S_OLD : S_OK;
-    case T_EV: return !f.ev.ok ? S_NODATA : f.ev.st ? S_OLD : S_OK;
-    case T_US: return !f.us.ok ? S_NODATA : f.us.st ? S_OLD : S_OK;
+    case T_BL: return !f.bl.ok ? S_NODATA : old_now(f.bl.st, f.bl.sa, f, now) ? S_OLD : S_OK;
+    case T_NW: return !f.nw.ok ? S_NODATA : old_now(f.nw.st, f.nw.sa, f, now) ? S_OLD : S_OK;
+    case T_SD: return !f.sd.ok ? S_NODATA : old_now(f.sd.st, f.sd.sa, f, now) ? S_OLD : S_OK;
+    case T_EV: return !f.ev.ok ? S_NODATA : old_now(f.ev.st, f.ev.sa, f, now) ? S_OLD : S_OK;
+    case T_US: return !f.us.ok ? S_NODATA : old_now(f.us.st, f.us.sa, f, now) ? S_OLD : S_OK;
     case T_LAB: return !f.lb.ok ? S_NODATA : f.lb.st ? S_OLD : S_OK;
   }
   return S_OK;
@@ -243,9 +311,9 @@ inline void dots(B &b, int n, int cur, uint32_t curcol, float y = 404) {
     x += (c ? 22 : 10) + 8;
   }
 }
-// Alert dots: one per visible alert and a hollow one for the Done card. More than 7 alerts: no dots (the "1 OF n" counter stays).
+// Alert dots: one per visible alert and a hollow one for the Done card, 7 at most. More than that: no dots (the "1 OF n" counter stays).
 inline void alert_dots(B &b, int n, int cur, uint32_t col, float y = 404) {
-  if (n < 1 || n > 7) return;
+  if (n < 1 || n > 6) return;   // at most 7 dots (the Done card is one); beyond that the "n OF m" counter stands alone
   int total = n + 1;                       // cur == n is the Done card
   float w = (total - 1) * 10 + 22 + (total - 1) * 8;
   float x = 240 - w / 2;
@@ -291,6 +359,7 @@ inline void pill(B &b, uint8_t ic, const char *text, uint32_t fg, uint32_t bg, f
 
 // Old-data pill ("18 MIN OLD"), 26 px high.
 inline void oldpill(B &b, const char *text, float top) {
+  if (b.oldtxt[0]) text = b.oldtxt;
   int g = b.group(240, 6);
   if (g > MAXG) return;
   Group &gr = b.s.g[g - 1];
@@ -308,8 +377,8 @@ inline void hero(B &b, float top, const char *val, const char *unit, uint32_t co
 
 // 280 degree hero arc, open at the bottom: r 200, 14 px.
 inline void hero_arc(B &b, int pct, uint32_t fill) {
+  if (pct < 0) return;   // no value: no track either, the screen shows "—" alone
   b.arc(130, 130 + 280, 414, 14, C_TRACK, true);
-  if (pct < 0) pct = 0;
   if (pct > 100) pct = 100;
   if (pct > 0) b.arc(130, 130 + (int) lroundf(2.8f * pct), 414, 14, fill, true);
 }
@@ -363,7 +432,7 @@ inline void nodata_screen(B &b, int topic) {
   b.text(tx, F15, C_LABEL, 240, s.y[w] + BASE15, 0, 380, 2);
 }
 
-// Darkbloom overview
+// Darkbloom overview. Mac names sit centred in two columns and wrap onto a second line, never cut.
 inline void bl_overview(B &b, const Feed &f, bool old) {
   const auto &m = f.bl;
   int td = -1, tm = -1, serving = 0;
@@ -373,14 +442,25 @@ inline void bl_overview(B &b, const Feed &f, bool old) {
     if (m.m[i].on && strcmp(m.m[i].s, "serving") == 0) serving++;
   }
   Look lk = look(old, C_BLUE);
+  char ln[MAX_MACS][2][44];
+  int nl[MAX_MACS];
+  for (int i = 0; i < m.n; i++) nl[i] = wrap_words(m.m[i].n, F22, 150, 2, ln[i]);
+  int rows = (m.n + 1) / 2;
+  float rh[2] = {0, 0}, gh = 0;
+  for (int r = 0; r < rows && r < 2; r++) {
+    int mx = nl[r * 2];
+    if (r * 2 + 1 < m.n && nl[r * 2 + 1] > mx) mx = nl[r * 2 + 1];
+    rh[r] = mx * 26.8f;
+    gh += rh[r] + (r ? 4 : 0);
+  }
+  bool showlab = !(old && rows > 1);   // room: with the old-data pill and two rows the "n of m serving" line goes
   Stack s;
   int hd = s.add(18);
-  int pl = old ? s.add(26, 10) : -1;
-  int hv = s.add(96, old ? 6 : 8);
-  int sub = s.add(26.8f, old ? 4 : 6);
-  int lab = s.add(18, 18);
-  int rows = (m.n + 1) / 2;
-  int grid = rows ? s.add(rows * 26.8f + (rows - 1) * 4, 8) : -1;
+  int pl = old ? s.add(26, 8) : -1;
+  int hv = s.add(96, old ? 4 : 8);
+  int sub = s.add(26.8f, old ? 2 : 6);
+  int lab = showlab ? s.add(18, old ? 10 : 16) : -1;
+  int grid = rows ? s.add(gh, showlab ? 8 : 12) : -1;
   s.go(TOP, BOT);
   header(b, IC_CHIP, "DARKBLOOM", C_BLUE, s.y[hd]);
   if (old) oldpill(b, "OLD DATA", s.y[pl]);
@@ -390,20 +470,26 @@ inline void bl_overview(B &b, const Feed &f, bool old) {
   if (tm >= 0) { snprintf(a, sizeof a, "$%d.%02d", tm / 100, tm % 100); snprintf(line, sizeof line, "today · %s this month", a); }
   else snprintf(line, sizeof line, "today · — this month");
   b.text(line, F22, C_LABEL, 240, s.y[sub] + BASE22, 0, 380);
-  if (m.md[0]) snprintf(line, sizeof line, "SERVING %s", m.md);
-  else snprintf(line, sizeof line, "%d OF %d SERVING", serving, m.n);
-  for (char *p = line; *p; p++) if (*p >= 'a' && *p <= 'z') *p -= 32;
-  b.text(line, F15, C_LABEL, 240, s.y[lab] + BASE15, 0, 380, 2);
-  for (int i = 0; i < m.n && grid >= 0; i++) {
+  if (lab >= 0) {
+    if (m.md[0]) snprintf(line, sizeof line, "SERVING %s", m.md);
+    else snprintf(line, sizeof line, "%d OF %d SERVING", serving, m.n);
+    for (char *p = line; *p; p++) if (*p >= 'a' && *p <= 'z') *p -= 32;
+    b.text(line, F15, C_LABEL, 240, s.y[lab] + BASE15, 0, 380, 2);
+  }
+  for (int i = 0; i < m.n && grid >= 0 && i < 4; i++) {
     const Mac &k = m.m[i];
     bool sv = k.on && strcmp(k.s, "serving") == 0;
     uint32_t dot = (!k.on || k.sl) ? C_BAD : sv ? C_BLUE : C_LABEL;
     uint32_t tc = sv ? C_WHITE : C_LABEL;
     if (old) { dot = C_IDLE; tc = C_LABEL; }
-    float x = 105 + (i % 2) * (123 + 24);
-    float y = s.y[grid] + (i / 2) * (26.8f + 4);
-    b.rect(x, y + 8.9f, 10, 10, 5, dot);
-    b.text(k.n, F22, tc, x + 18, y + BASE22, 1, 105);
+    int r = i / 2;
+    int cnt = (r == rows - 1 && (m.n & 1)) ? 1 : 2;
+    float cx = cnt == 1 ? 240 : 240 + ((i & 1) ? 1 : -1) * 90;
+    float y = s.y[grid] + (r ? rh[0] + 4 : 0);
+    int g = b.group((int) cx, 8);
+    b.rect(0, y + 8.9f, 10, 10, 5, dot)->grp = (uint8_t) g;
+    b.text(ln[i][0], F22, tc, 0, y + BASE22, 1, 0, 0, g);
+    if (nl[i] > 1) b.text(ln[i][1], F22, tc, cx, y + 26.8f + BASE22, 0, 170);
   }
 }
 
@@ -494,8 +580,8 @@ inline void sd_overview(B &b, const Feed &f, bool old) {
   int sev = topic_sev(f, "sd");
   bool failing = d.pe > 0 || (d.arr[0] && strcasecmp(d.arr, "STARTED") != 0);
   Look lk = look(old, pct_col(pct, failing ? 2 : 0));
-  hero_arc(b, old ? (pct < 0 ? 0 : pct) : pct, lk.fill);
-  if (old) { b.s.it[b.s.n - 1].col = C_IDLE; }
+  hero_arc(b, pct, lk.fill);
+  if (old && pct >= 0) { b.s.it[b.s.n - 1].col = C_IDLE; }
   // worst disk
   const Disk *worst = nullptr;
   for (int i = 0; i < d.n; i++) if (d.d[i].u >= 90 && (!worst || d.d[i].u > worst->u) && d.d[i].r != 'p') worst = &d.d[i];
@@ -537,7 +623,7 @@ inline void ev_overview(B &b, const Feed &f, bool old) {
   int sev = topic_sev(f, "ev");
   Look lk = look(old, pct_col(e.soc, sev >= 2 ? 2 : 0));
   hero_arc(b, e.soc, lk.fill);
-  if (!old && e.lim > 0) {   // charge limit tick
+  if (!old && e.lim > 0 && e.soc >= 0) {   // charge limit tick
     Item *tk = b.add(K_ARC);   // rnd 2 = limit tick: a 4 px by 26 px line across the arc at angle a0
     tk->rnd = 2; tk->a0 = (int16_t) (130 + (int) lroundf(2.8f * e.lim)); tk->col = C_WHITE;
   }
@@ -557,7 +643,10 @@ inline void ev_overview(B &b, const Feed &f, bool old) {
   b.text(line, F22, C_LABEL, 240, s.y[sub] + BASE22, 0, 380);
   if (pillr >= 0) {
     bool charging = e.ch == 1;
-    if (e.plug == 0) pill(b, IC_PLUG, "Unplugged", C_WHITE, P_GREY, s.y[pillr]);
+    if (e.up) {   // the car's software update, shown inside the EV page (never a full-screen takeover)
+      if (e.upp >= 0) snprintf(line, sizeof line, "Updating %d%%", e.upp); else snprintf(line, sizeof line, "Updating");
+      pill(b, IC_DOWNLOAD, line, C_BLUE, P_BLUE, s.y[pillr]);
+    } else if (e.plug == 0) pill(b, IC_PLUG, "Unplugged", C_WHITE, P_GREY, s.y[pillr]);
     else if (charging) pill(b, IC_BOLT, "Charging", C_BLUE, P_BLUE, s.y[pillr]);
     else if (e.plug == 1 && e.soc >= 0 && e.lim > 0 && e.soc >= e.lim) pill(b, IC_CHECK, "At limit", C_OK, P_GREEN, s.y[pillr]);
     else if (e.plug == 1) pill(b, IC_PLUG, "Plugged in", C_WHITE, P_GREY, s.y[pillr]);
@@ -615,8 +704,11 @@ inline void lb_overview(B &b, const Feed &f, bool old) {
   int pl = old ? s.add(26, 10) : -1;
   int hv = s.add(96, old ? 6 : 8);
   int sub = s.add(26.8f, 4);
-  int dv = s.add(2, 20);
-  int q = s.add(40, 16);
+  int nurg = 0, first_u = 0;
+  for (int i = 0; i < l.n; i++) if (l.i[i].w) { if (!nurg) first_u = i; nurg++; }
+  int pu = (nurg > 0 && !old) ? s.add(35, 10) : -1;
+  int dv = s.add(2, pu >= 0 ? 12 : 20);
+  int q = s.add(35, 12);
   s.go(TOP, BOT);
   header(b, IC_FLASK, "LAB", C_BLUE, s.y[hd]);
   if (old) {
@@ -629,16 +721,20 @@ inline void lb_overview(B &b, const Feed &f, bool old) {
   snprintf(v, sizeof v, "%d", l.n);
   hero(b, s.y[hv], v, "", old ? C_LABEL : C_WHITE, -2);
   b.text(l.n == 0 ? "nothing waiting" : "waiting on you", F22, C_LABEL, 240, s.y[sub] + BASE22, 0, 380);
+  if (nurg > 0 && !old) {
+    char u[44], tt[44];
+    wrap_words(l.i[first_u].t, F22, nurg > 1 ? 150 : 270, 1, (char (*)[44]) tt);
+    if (nurg > 1) snprintf(u, sizeof u, "%d urgent · %s", nurg, tt); else snprintf(u, sizeof u, "%s", tt);
+    pill(b, IC_WARN, u, C_WARN, P_AMBER, s.y[pu]);
+  }
   b.rect(140, s.y[dv], 200, 2, 0, C_TRACK);
   int g = b.group(240, 10);
-  if (l.q >= 0) {
-    snprintf(v, sizeof v, "%d", l.q);
-    b.text(v, F40, old ? C_LABEL : C_WHITE, 0, s.y[q] + 34.3f, 1, 0, 0, g);
-    b.text("in model queue", F22, C_LABEL, 0, s.y[q] + 34.3f, 1, 0, 0, g);
-  } else {
-    b.text("—", F40, C_IDLE, 0, s.y[q] + 34.3f, 1, 0, 0, g);
-    b.text("in model queue", F22, C_LABEL, 0, s.y[q] + 34.3f, 1, 0, 0, g);
-  }
+  char qt[28];
+  if (l.q >= 0 && l.r >= 0) snprintf(qt, sizeof qt, "%d jobs · %d running", l.q, l.r);
+  else if (l.q >= 0) snprintf(qt, sizeof qt, "%d jobs", l.q);
+  else snprintf(qt, sizeof qt, "—");
+  b.text("AI QUEUE", F15, C_LABEL, 0, s.y[q] + 29.f, 1, 0, 2, g);
+  b.text(qt, F22, l.q >= 0 ? (old ? C_LABEL : C_WHITE) : C_IDLE, 0, s.y[q] + 29.f, 1, 0, 0, g);
 }
 
 // Clock overview
@@ -687,32 +783,98 @@ inline void clock_overview(B &b, const Feed &f, const Clock &c, uint32_t now) {
 }
 
 // ----- detail pages
+// Darkbloom detail: Macs grouped by cluster (blue bar, up to 3 clusters on one screen). Earnings are TODAY, job counts NOW.
+// At 3 clusters the "DARKBLOOM · MACS" title goes and the model row's label turns from grey "MODEL" to blue "DARKBLOOM".
+// Rows fall back to one line each (no status line) when the full layout would not fit between y 96 and 368.
 inline void bl_detail(B &b, const Feed &f) {
   const auto &m = f.bl;
-  Stack s;
-  int hd = s.add(18);
-  int md = m.md[0] ? s.add(26.8f, 6) : -1;
-  int ls = s.add(m.n * 47.0f + (m.n - 1) * 14, 18);
-  s.go(TOP, BOT);
-  header(b, 0, "DARKBLOOM · MACS", C_BLUE, s.y[hd]);
-  if (md >= 0) { char t[40]; snprintf(t, sizeof t, "serving %s", m.md); b.text(t, F22, C_WHITE, 240, s.y[md] + BASE22, 0, 380); }
+  // clusters in order of first appearance; a Mac with no cluster joins "OTHER" only when other Macs have one
+  char cn[4][12] = {"", "", "", ""};
+  int ncl = 0, of[MAX_MACS];
+  bool anycl = false;
+  for (int i = 0; i < m.n; i++) if (m.m[i].cl[0]) anycl = true;
   for (int i = 0; i < m.n; i++) {
-    const Mac &k = m.m[i];
-    bool sv = k.on && strcmp(k.s, "serving") == 0;
-    float y = s.y[ls] + i * (47 + 14);
-    uint32_t dot = (!k.on || k.sl) ? C_BAD : sv ? C_BLUE : C_LABEL;
-    b.rect(85, y + 8.9f, 10, 10, 5, dot);
-    b.text(k.n, F22, C_WHITE, 103, y + BASE22, 1, 140);
-    char e[16] = "—";
-    if (k.td >= 0) snprintf(e, sizeof e, "$%d.%02d", k.td / 100, k.td % 100);
-    b.text(e, F22, C_WHITE, 395, y + BASE22, 2, 120);
-    char st[32];
-    if (!k.on || k.sl) { char d[16]; dur_short(d, sizeof d, k.age); snprintf(st, sizeof st, "offline %s", k.age >= 0 ? d : "—"); }
-    else if (sv) snprintf(st, sizeof st, "serving");
-    else if (k.w >= 0) snprintf(st, sizeof st, "idle · %d W", k.w);
-    else snprintf(st, sizeof st, "idle");
-    b.text(st, F15, C_LABEL, 103, y + 26.8f + 2 + BASE15, 1, 260);
-    if (k.jobs > 0) { char j[16]; snprintf(j, sizeof j, "%d job%s", k.jobs, k.jobs == 1 ? "" : "s"); b.text(j, F15, C_LABEL, 395, y + 26.8f + 2 + BASE15, 2, 120); }
+    of[i] = -1;
+    if (!anycl) continue;
+    const char *nm = m.m[i].cl[0] ? m.m[i].cl : "other";
+    for (int c = 0; c < ncl; c++) if (strcmp(cn[c], nm) == 0) of[i] = c;
+    if (of[i] < 0 && ncl < 3) { cp(cn[ncl], sizeof cn[ncl], nm); of[i] = ncl++; }
+  }
+  bool three = ncl >= 3;
+  bool has_md = m.md[0] != 0;
+  // order: by cluster, then feed order
+  int ord[MAX_MACS], no = 0;
+  if (anycl) { for (int c = 0; c < ncl; c++) for (int i = 0; i < m.n; i++) if (of[i] == c) ord[no++] = i; }
+  else for (int i = 0; i < m.n; i++) ord[no++] = i;
+  for (int pass = 0; pass < 2; pass++) {
+    bool compact = pass == 1;
+    float rowh = compact ? 26.8f : 47.0f, gap = 8;
+    Stack s;
+    int hd = three ? -1 : s.add(18);
+    int md = (has_md || three) ? s.add(26.8f, three ? 0 : 6) : -1;
+    int tl = s.add(18, 6);
+    int cl_at[3] = {-1, -1, -1}, mac_at[MAX_MACS];
+    for (int k = 0; k < no; k++) mac_at[k] = -1;
+    int lastc = -2;
+    for (int k = 0; k < no; k++) {
+      int c = of[ord[k]];
+      if (anycl && c != lastc) { cl_at[c] = s.add(18, lastc == -2 ? 2 : 10); lastc = c; }
+      bool fresh = k == 0 || (anycl && of[ord[k - 1]] != c);
+      mac_at[k] = s.add(rowh, fresh ? 2 : gap);
+    }
+    if (!compact && s.total() > BOT - TOP) continue;
+    s.go(TOP, BOT);
+    if (hd >= 0) header(b, 0, "DARKBLOOM · MACS", C_BLUE, s.y[hd]);
+    if (md >= 0) {
+      int g = b.group(240, 8);
+      b.text(three ? "DARKBLOOM" : "MODEL", F15, three ? C_BLUE : C_LABEL, 0, s.y[md] + 5.5f + BASE15, 1, 0, 2, g);
+      if (has_md) b.text(m.md, F22, C_WHITE, 0, s.y[md] + BASE22, 1, 0, 0, g);
+    }
+    b.text("TODAY", F15, C_LABEL, 395, s.y[tl] + BASE15, 2, 100, 2);
+    float bar_top = 0;
+    int cur = -2;
+    for (int k = 0; k < no; k++) {
+      const Mac &mk = m.m[ord[k]];
+      int c = of[ord[k]];
+      float x0 = anycl ? 108 : 103, dx = anycl ? 90 : 85;
+      if (anycl && c != cur) {
+        cur = c;
+        // cluster label: NAME · n NOW
+        int sum = -1;
+        for (int q = 0; q < m.n; q++) if (of[q] == c && m.m[q].ij >= 0) sum = (sum < 0 ? 0 : sum) + m.m[q].ij;
+        char lb[32], nm[12];
+        snprintf(nm, sizeof nm, "%s", cn[c]);
+        for (char *p = nm; *p; p++) if (*p >= 'a' && *p <= 'z') *p -= 32;
+        if (sum >= 0) snprintf(lb, sizeof lb, "%s · %d NOW", nm, sum); else snprintf(lb, sizeof lb, "%s", nm);
+        b.text(lb, F15, C_BLUE, 90, s.y[cl_at[c]] + BASE15, 1, 260, 2);
+        bar_top = s.y[cl_at[c]];
+        int last = k;
+        while (last + 1 < no && of[ord[last + 1]] == c) last++;
+        float bot = s.y[mac_at[last]] + rowh;
+        b.rect(78, bar_top, 3, bot - bar_top, 1, C_BLUE);
+      }
+      float y = s.y[mac_at[k]];
+      bool sv = mk.on && strcmp(mk.s, "serving") == 0;
+      uint32_t dot = (!mk.on || mk.sl) ? C_BAD : sv ? C_BLUE : C_LABEL;
+      b.rect(dx, y + 8.9f, 10, 10, 5, dot);
+      b.text(mk.n, F22, C_WHITE, x0, y + BASE22, 1, 160);
+      char e[16] = "—";
+      if (mk.td >= 0) snprintf(e, sizeof e, "$%d.%02d", mk.td / 100, mk.td % 100);
+      b.text(e, F22, mk.td >= 0 ? C_WHITE : C_IDLE, 395, y + BASE22, 2, 120);
+      if (compact) continue;
+      char st[44];
+      if (!mk.on || mk.sl) { char d[16]; dur_short(d, sizeof d, mk.age); snprintf(st, sizeof st, "offline %s", mk.age >= 0 ? d : "—"); }
+      else if (sv && (mk.ij >= 0 || mk.jobs >= 0)) {
+        char a1[12] = "—", a2[12] = "—";
+        if (mk.ij >= 0) snprintf(a1, sizeof a1, "%d", mk.ij);
+        if (mk.jobs >= 0) snprintf(a2, sizeof a2, "%d", mk.jobs);
+        snprintf(st, sizeof st, "inference %s · sandbox %s now", a1, a2);
+      } else if (sv) snprintf(st, sizeof st, "serving");
+      else if (mk.w >= 0) snprintf(st, sizeof st, "idle · %d W", mk.w);
+      else snprintf(st, sizeof st, "idle");
+      b.text(st, F15, C_LABEL, x0, y + 26.8f + 2 + BASE15, 1, 280);
+    }
+    return;
   }
 }
 
@@ -753,6 +915,17 @@ inline void nw_detail(B &b, const Feed &f, int period) {
     b.text(lab, F15, C_BLUE, 240, s.y[pe] + BASE15, 0, 380, 2);
   } else b.text(w.rolling ? pn[period] : pc[period], F40, C_BLUE, 240, s.y[pe] + BASE40_N, 0, 380);
   float y = s.y[grid];
+  // the name column takes whatever the number columns leave, so a name is never cut
+  float dw = 60;
+  for (int i = 0; i < shown; i++) {
+    const Link &l = w.l[idx[i]];
+    char d[16];
+    data_gb(d, sizeof d, l.t[period][0], l.has_t[period]);
+    float x = txtw(d, F22);
+    if (x > dw) dw = x;
+  }
+  float namew = 295 - dw - 14 - 77;
+  if (namew < 108) namew = 108;
   b.text("DOWN", F15, C_LABEL, 295, y + BASE15, 2, 100, 2);
   b.text("UP", F15, C_LABEL, 403, y + BASE15, 2, 100, 2);
   for (int i = 0; i < shown; i++) {
@@ -761,7 +934,7 @@ inline void nw_detail(B &b, const Feed &f, int period) {
     char d[16], u[16];
     data_gb(d, sizeof d, l.t[period][0], l.has_t[period]);
     data_gb(u, sizeof u, l.t[period][1], l.has_t[period]);
-    b.text(l.n, F22, C_WHITE, 77, ry + BASE22, 1, 108);
+    b.text(l.n, F22, C_WHITE, 77, ry + BASE22, 1, (int) namew);
     b.text(d, F22, C_WHITE, 295, ry + BASE22, 2, 100);
     b.text(u, F22, C_LABEL, 403, ry + BASE22, 2, 100);
   }
@@ -834,6 +1007,14 @@ inline void ev_detail(B &b, const Feed &f) {
   else if (e.soc >= 0) snprintf(line, sizeof line, "at %d%% · limit —", e.soc);
   else snprintf(line, sizeof line, "at — · limit —");
   b.text(line, F22, C_LABEL, 240, s.y[sub] + BASE22, 0, 380);
+  if (e.up) {   // the car's software update replaces the RATE and TO columns
+    char u1[40];
+    if (e.upp >= 0) snprintf(u1, sizeof u1, "%d%% · %s → %s", e.upp, e.upf[0] ? e.upf : "—", e.upt[0] ? e.upt : "—");
+    else snprintf(u1, sizeof u1, "%s → %s", e.upf[0] ? e.upf : "—", e.upt[0] ? e.upt : "—");
+    b.text("SOFTWARE UPDATE", F15, C_BLUE, 240, s.y[gr] + BASE15, 0, 380, 2);
+    b.text(u1, F22, C_WHITE, 240, s.y[gr] + 18 + 4 + BASE22 + 4, 0, 380);
+    return;
+  }
   bool chg = e.ch == 1;
   char rate[12] = "—", eta[12] = "—", etl[12];
   const char *ru = "", *eu = "";
@@ -892,30 +1073,31 @@ inline void us_detail(B &b, const Feed &f) {
 
 inline void lb_detail(B &b, const Feed &f) {
   const auto &l = f.lb;
-  int n = l.n > 4 ? 4 : l.n;
+  int n = l.n > 6 ? 6 : l.n;
   Stack s;
   int hd = s.add(18);
-  int items = s.add(n > 0 ? n * 26.8f + (n - 1) * 12 : 26.8f, 16);
-  int dv = s.add(2, 18);
-  int q = s.add(26.8f, 14);
+  int items = s.add(n > 0 ? n * 26.8f + (n - 1) * 6 : 26.8f, 12);
+  int dv = s.add(2, 10);
+  int q = s.add(26.8f, 0);
   s.go(TOP, BOT);
   header(b, 0, "LAB · WAITING ON YOU", C_BLUE, s.y[hd]);
   if (n == 0) b.text("Nothing waiting", F22, C_LABEL, 240, s.y[items] + BASE22, 0, 310);
   for (int i = 0; i < n; i++) {
-    float y = s.y[items] + i * (26.8f + 12);
-    uint32_t c = l.i[i].w ? C_WARN : C_WHITE;
-    b.text(l.i[i].t, F22, c, 85, y + BASE22, 1, 240);
-    char a[12];
-    dur_short(a, sizeof a, l.i[i].a);
-    b.text(a, F15, l.i[i].w ? C_WARN : C_LABEL, 395, y + BASE22, 2, 60);
+    float y = s.y[items] + i * (26.8f + 6);
+    bool u = l.i[i].w;
+    if (u) b.icon(IC_WARN, 16, C_WARN, 100, y + 5.4f);
+    else b.rect(104, y + 9.4f, 8, 8, 4, C_IDLE);
+    char tt[44];
+    wrap_words(l.i[i].t, F22, 260, 1, (char (*)[44]) tt);
+    b.text(tt, F22, u ? C_WARN : C_WHITE, 126, y + BASE22, 1, 270);
   }
-  b.rect(85, s.y[dv], 310, 2, 0, C_TRACK);
-  b.text("MODEL QUEUE", F15, C_LABEL, 85, s.y[q] + BASE22, 1, 150, 2);
+  b.rect(80, s.y[dv], 320, 2, 0, C_TRACK);
+  b.text("AI QUEUE", F15, C_LABEL, 80, s.y[q] + BASE22, 1, 110, 2);
   char t[28];
-  if (l.q >= 0 && l.r >= 0) snprintf(t, sizeof t, "%d · %d running", l.q, l.r);
-  else if (l.q >= 0) snprintf(t, sizeof t, "%d", l.q);
+  if (l.q >= 0 && l.r >= 0) snprintf(t, sizeof t, "%d jobs · %d running", l.q, l.r);
+  else if (l.q >= 0) snprintf(t, sizeof t, "%d jobs", l.q);
   else snprintf(t, sizeof t, "—");
-  b.text(t, F22, l.q >= 0 ? C_WHITE : C_IDLE, 395, s.y[q] + BASE22, 2, 200);
+  b.text(t, F22, l.q >= 0 ? C_WHITE : C_IDLE, 400, s.y[q] + BASE22, 2, 210);
 }
 
 // ----- alert view
@@ -977,22 +1159,32 @@ inline void alert_view(B &b, const Feed &f, const Nav &nv, uint32_t now) {
   char t[24];
   snprintf(t, sizeof t, "%d OF %d", pos + 1, nvis);
   b.text(t, F15, C_LABEL, 240, 56 + BASE15, 0, 200, 2);
+  // Line 1 (what) wraps to 2 lines and ends on a whole word; line 2 (where) is the location the feed sent, never a template.
+  // An older feed without t / w falls back to the title derived from the key and the plain message.
+  char title[48], where[72];
+  if (a.t[0]) cp(title, sizeof title, a.t); else alert_title(a, title, sizeof title);
+  if (a.t[0]) cp(where, sizeof where, a.w); else cp(where, sizeof where, a.m);
+  char tl[2][44], wl[2][44];
+  int ntl = wrap_words(title, F40, 350, 2, tl);
+  int nwl = where[0] ? wrap_words(where, F22, 350, 2, wl) : 0;
   Stack s;
   int hd = s.add(18);
-  int ti = s.add(44, 10);
-  int ds = s.add(28.6f * 3, 10);
+  int ti = s.add(ntl * 46.0f - 2, 10);
+  int ds = nwl ? s.add(nwl * 28.6f, 10) : -1;
   int sr = s.add(18, 14);
   s.go(90, 340);
-  header(b, IC_WARN, a.sv == 'r' ? "ALERT" : "WARNING", lc, s.y[hd]);
-  char title[32];
-  alert_title(a, title, sizeof title);
-  b.text(title, F40, C_WHITE, 240, s.y[ti] + BASE40_11, 0, 340, 0);
-  Item *d = b.text(a.m, F22, C_LABEL, 240, s.y[ds] + BASE22_13, 0, 320);
-  d->h = 86; d->lh = 29;
+  char hdr[32];
+  if (a.c > 1) {
+    snprintf(hdr, sizeof hdr, "%s · %d %s", a.sv == 'r' ? "ALERT" : "WARNING", a.c, a.u[0] ? a.u : "ITEMS");
+    for (char *p = hdr; *p; p++) if (*p >= 'a' && *p <= 'z') *p -= 32;
+  } else snprintf(hdr, sizeof hdr, "%s", a.sv == 'r' ? "ALERT" : "WARNING");
+  header(b, IC_WARN, hdr, lc, s.y[hd]);
+  for (int i = 0; i < ntl; i++) b.text(tl[i], F40, C_WHITE, 240, s.y[ti] + i * 46 + BASE40_11, 0, 360, 0);
+  for (int i = 0; i < nwl; i++) b.text(wl[i], F22, C_LABEL, 240, s.y[ds] + i * 28.6f + BASE22_13, 0, 340);
   int tp = topic_of(a.tp);
   uint32_t secs = a.a + (uint32_t) (now - f.at_ms) / 1000;
   char dur[24];
-  dur_hm(dur, sizeof dur, (int) secs);
+  age_text(dur, sizeof dur, (int) secs);
   char src[48];
   snprintf(src, sizeof src, "%s · ACTIVE %s", topic_name(tp), dur);
   for (char *p = src; *p; p++) if (*p >= 'a' && *p <= 'z') *p -= 32;
@@ -1087,8 +1279,11 @@ inline void make_scene(const Feed &f, const Nav &nv, const Clock &ck, uint32_t n
   char worst = 0;
   int count = visible_alerts(nv, f, now, &worst);
 
+  // The ring is the worst of the feed's level and every alert still showing, on every screen (dim, old and empty ones too).
+  char lvl = f.lvl;
+  if (worst == 'r') lvl = 'r'; else if (worst == 'a' && lvl != 'r') lvl = 'a';
   out.ring = C_IDLE; out.ringw = 4;
-  if (up) { out.ring = f.lvl == 'r' ? C_BAD : f.lvl == 'a' ? C_WARN : C_OK; out.ringw = f.lvl == 'r' ? 10 : f.lvl == 'a' ? 6 : 4; }
+  if (up) { out.ring = lvl == 'r' ? C_BAD : lvl == 'a' ? C_WARN : C_OK; out.ringw = lvl == 'r' ? 10 : lvl == 'a' ? 6 : 4; }
 
   if (nv.alert && up) {
     alert_view(b, f, nv, now);
@@ -1100,15 +1295,18 @@ inline void make_scene(const Feed &f, const Nav &nv, const Clock &ck, uint32_t n
   int st = topic_state(f, topic, now);
   bool night = brightness >= 1 && brightness <= 5;
   out.night = night;
-  bool arc = !night && st != S_OFFLINE && st != S_NODATA && !nv.detail && (topic == T_SD || topic == T_EV || topic == T_US);
   out.key = (uint32_t) (topic * 64 + nv.sub * 4 + (nv.detail ? 2 : 0)) + (uint32_t) st * 4096u + (night ? 65536u : 0);
-  marker(b, count, worst, arc ? 56 : 52);
 
   if (night) {
+    marker(b, count, worst, 52);
     night_screen(b, f, ck, topic, now, st);
     return;
   }
   bool old = st == S_OLD;
+  if (old) {   // "UPDATED 18 MIN AGO": the data is at least 10 minutes old and the feed says by how much
+    int age = topic_age(f, topic, now);
+    if (age >= 0) { char t[16]; age_text(t, sizeof t, age); snprintf(b.oldtxt, sizeof b.oldtxt, "UPDATED %s AGO", t); }
+  }
   if (st == S_OFFLINE) offline_screen(b, f, topic, now);
   else if (st == S_NODATA) nodata_screen(b, topic);
   else if (nv.detail) {
@@ -1131,6 +1329,9 @@ inline void make_scene(const Feed &f, const Nav &nv, const Clock &ck, uint32_t n
       default: clock_overview(b, f, ck, now);
     }
   }
+  bool has_arc = false;   // a hero arc moves the marker down 4 px
+  for (int i = 0; i < out.n; i++) if (out.it[i].k == K_ARC && out.it[i].rnd != 2) has_arc = true;
+  marker(b, count, worst, has_arc ? 56 : 52);
   // hint and dots
   if (nv.detail) {
     bool sd = topic == T_SD;
@@ -1188,7 +1389,7 @@ inline void make_system(const Sys &sy, Scene &out) {
     int sub = s.add(26.8f, 4);
     int dn = s.add(18, 18);
     s.go(TOP, BOT);
-    header(b, IC_DOWNLOAD, "UPDATING", C_BLUE, s.y[hd]);
+    header(b, IC_DOWNLOAD, "PANEL · UPDATING", C_BLUE, s.y[hd]);
     char v[8];
     snprintf(v, sizeof v, "%d", sy.pct);
     hero(b, s.y[hv], v, "%", C_WHITE, -2);

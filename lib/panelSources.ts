@@ -6,11 +6,12 @@ import { parseUsageConfig, readUsage, usageSection } from '@/lib/panelUsage';
 import { readRivianParallaxState } from '@/lib/rivian';
 import { rivianNightPlan } from '@/lib/rivianNightPlan';
 import {
-  earnedCents, parseBloom, parseEv, parseFluxCsv, parseNetTotals, parseStorage, parseTotalsMap, parseUnraidNet, parseWan,
+  applyShortNames, earnedCents, parseShortNames, parseBloom, parseEv, parseFluxCsv, parseNetTotals, parseStorage, parseTotalsMap, parseUnraidNet, parseWan,
   withExtraLink, withNetTotals, type NetTotals, type Section, type Sources,
 } from '@/lib/panelFeed';
 
 const FETCH_MS = 5_000;
+const names = parseShortNames(process.env.PANEL_SHORT_NAMES);
 
 async function getJson(url: string): Promise<unknown> {
   const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_MS), cache: 'no-store' });
@@ -58,7 +59,7 @@ async function storage(): Promise<Section> {
     ['unraid_disk', 'unraid_array'],
     ['fs_size_kb', 'fs_used_kb', 'fs_free_kb', 'spinning', 'temp_c', 'state', 'parity_running', 'parity_progress', 'parity_errors', 'notif_unread_alert', 'notif_unread_warning'],
   ));
-  return parseStorage(rows, nowS());
+  return applyShortNames(parseStorage(rows, nowS()), names);
 }
 
 // Unraid's own traffic from Influx (the fallback when the monitor is down, and the third link when it is up).
@@ -83,11 +84,11 @@ async function network(): Promise<Section> {
       const wan = parseWan(await getJson(`${nm}/api/fw_wan_rates`));
       if (wan.ok) {
         const extra = await unraidLive().catch(() => undefined);   // optional third link
-        return withNetTotals(withExtraLink(wan, extra), await totals);
+        return applyShortNames(withNetTotals(withExtraLink(wan, extra), await totals), names);
       }
     } catch { /* fall through to Unraid's own traffic */ }
   }
-  return withNetTotals(await unraidLive(), await totals);
+  return applyShortNames(withNetTotals(await unraidLive(), await totals), names);
 }
 
 async function darkbloom(): Promise<Section> {
@@ -107,7 +108,15 @@ async function darkbloom(): Promise<Section> {
       month: m.status === 'fulfilled' ? earnedCents(m.value) : undefined,
     };
   }));
-  return parseBloom({ live, alerts, earned });
+  return applyShortNames(parseBloom({ live, alerts, earned }), names);
+}
+
+// A Rivian software update that is installing right now (shown inside EV, never as a takeover). The car reports no percent
+// in this state; the panel shows "Updating" without one when it is missing.
+function rivianUpdate(state: unknown): { pct?: number; from?: string; to?: string } | null {
+  const s = state as { otaInstalling?: boolean; otaCurrentVersion?: string; otaAvailableVersion?: string; otaPercent?: number } | null;
+  if (!s?.otaInstalling) return null;
+  return { pct: typeof s.otaPercent === 'number' ? s.otaPercent : undefined, from: s.otaCurrentVersion, to: s.otaAvailableVersion };
 }
 
 async function evTonight(): Promise<Section> {
@@ -125,7 +134,7 @@ async function evTonight(): Promise<Section> {
     minutesToLimit: num(x.minutesToFull) ?? (par?.timeToEndOfChargeSec != null ? Math.round(par.timeToEndOfChargeSec / 60) : null),
     plugged: run.state?.isPluggedIn ?? null, soc: run.state?.chargePercent ?? null, limit: run.state?.chargeLimit ?? null,
     amps: r.plan.amps, kwh: r.plan.kwh, windowHours: r.plan.windowHours, targetPct: r.plan.targetPct,
-    shortfall: r.plan.shortfall, isWork: r.isWork,
+    shortfall: r.plan.shortfall, isWork: r.isWork, update: rivianUpdate(run.state),
   });
 }
 
