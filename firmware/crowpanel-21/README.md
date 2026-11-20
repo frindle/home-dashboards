@@ -1,6 +1,6 @@
 # CrowPanel 2.1" status panel (ESPHome)
 
-Read-only round display for the home lab. It polls the dashboard's `GET /api/panel` every 20 s (one small JSON with
+Read-only round display for the home lab. It polls the dashboard's `GET /api/panel` every 10 s (one small JSON with
 short keys, documented at the top of `lib/panelFeed.ts`). Nothing on the panel writes anywhere.
 
 Board: Elecrow CrowPanel Rotary 2.1" (ESP32-S3R8, 8 MB PSRAM, 16 MB flash, ST7701S 480x480, CST816 touch, encoder
@@ -42,6 +42,44 @@ When red clears, the panel goes home. Amber never jumps, it only tints the ring.
    `PANEL_NETMON_URL`, `PANEL_INFLUX_BUCKET`, optional `PANEL_INFLUX_TOKEN`, `PANEL_NETMON_TOTALS_MAP`). Night dimming is
    off until `PANEL_NIGHT_HOURS` is set (with `PANEL_NIGHT_BRIGHTNESS`, `PANEL_DAY_BRIGHTNESS`, `PANEL_TZ`).
 3. `pip install esphome`, then `esphome config crowpanel-21.yaml` to validate.
+
+## Dim when nobody is at the desk (optional)
+The backlight can drop to `PANEL_AWAY_BRIGHTNESS` (default 1%) when Home Assistant says you are away from the desk, and
+return to the normal day/night level when you are back. Nothing changes until you set `PANEL_PRESENCE_ENTITY`. The
+dashboard reads the entities on every panel request (answers cached 2 s, 2 s timeout, so the feed is never held up), and
+the panel polls every 10 s, so a change shows within about 10 s after Home Assistant knows it. Turning the knob still lifts a
+dim panel to 40% for a minute.
+
+Add two lines to the dashboard `.env` (`HA_URL` and `HA_TOKEN` are the ones the Ecobee sync already uses):
+```
+PANEL_PRESENCE_ENTITY=binary_sensor.<your_mac>_active
+PANEL_PRESENCE_PRESENT_STATES=on,home
+```
+`PANEL_PRESENCE_ENTITY` takes a comma list. The panel stays bright if ANY usable entity is "present" and dims only when
+ALL usable ones are away. An entity that is `unavailable`, `unknown` or fails to read is ignored; if none is usable the
+panel just uses the day/night level. Any state not in `PANEL_PRESENCE_PRESENT_STATES` (default `on,home`) counts as away.
+
+**Mac sensor.** The Home Assistant app for macOS has an "Active" binary sensor (`binary_sensor.<mac_name>_active`): on
+while the Mac is awake and in use, off when it is locked, asleep, showing the screensaver or has the screen off. Turn it
+on in the Mac app under Settings > Sensors if it is not listed. It is unlocked-or-not in effect, with one catch: a Mac
+that is awake but idle at the lock screen is off, and an unlocked Mac with the screen simply off is off too. Find the
+entity id in Home Assistant under Developer tools > States (search "active"). The app also exposes the detail (Locked,
+Screensaver, Sleeping, Screen Off) as attributes of that sensor.
+
+**Ecobee occupancy.** `binary_sensor.<room_sensor>_occupancy` also works, but it is slow, so use it for "dim when the room
+is empty", not instant lock/unlock. Two delays add up: ecobee itself reports a room occupied until about 30 minutes after
+the last motion (reported 30 minutes in Follow Me mode and up to 2 hours in Smart Home mode; check your thermostat mode),
+and the cloud integration only polls about every 3 minutes (reports range 1 to 5). Expect the panel to dim 30 to 35
+minutes after you leave the room, and to brighten within a few minutes of you walking in. With both a Mac sensor and an
+ecobee sensor listed, the Mac going to sleep does not dim the panel while the room still reads occupied.
+
+**Fallback without Home Assistant.** `mac-presence/` has a small launchd agent for the Mac that POSTs lock/unlock to
+`/api/panel/presence` (set `PANEL_PRESENCE_TOKEN`; `mac-presence/install.sh` asks for the URL and token). It is a
+background job on the Mac, so only use it if the Home Assistant route is not enough. It is used only when Home Assistant
+gave no usable answer.
+
+Turn it off: unset `PANEL_PRESENCE_ENTITY` (and `PANEL_PRESENCE_TOKEN`, and run `mac-presence/uninstall.sh` if you
+installed it). The feed is then byte-for-byte what it was before.
 
 ## Flash (first time, USB)
 Hold BOOT, plug USB into the USB-5V-IN port, release BOOT, then `esphome run crowpanel-21.yaml` and pick the serial port.

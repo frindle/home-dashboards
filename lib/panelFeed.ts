@@ -13,7 +13,8 @@
 //   rr  only on red: stable keys of the red reasons ("silent:<mac>", "array", "parity", "cache", "unraid"), at most 4.
 //       The key does not change when a number inside the reason changes (cache 91% -> 92%), so the panel can tell a NEW
 //       reason (a key it has not seen in this red spell) from the same one moving. why[] is for display only.
-//   br  only when PANEL_NIGHT_HOURS is set: backlight brightness the panel should use now, percent 1..100
+//   br  only when PANEL_NIGHT_HOURS is set, or presence is on and says nobody is at the desk: backlight brightness the
+//       panel should use now, percent 1..100
 //   bl  Darkbloom per Mac (at most MAX_MACS):  m: [{ n name, on 1 serving, s state text, w watts, jobs sandbox jobs,
 //                                 td earned today (cents), tm earned this month (cents), age seconds since last
 //                                 power minute, sl 1 silent (alert) }],   al: open bloom-ledger alert count
@@ -399,6 +400,70 @@ export function brightnessAt(cfg: DimConfig, nowMs: number): number {
   return night ? cfg.night : cfg.day;
 }
 
+// ---------- desk presence (optional) ----------
+
+// Dims the panel when nobody is at the desk. Off unless one of these is set:
+//  - Home Assistant (primary): PANEL_PRESENCE_ENTITY, a comma list of entity ids (with HA_URL and HA_TOKEN, as for the
+//    Ecobee sync): the Mac app's "active" binary sensor, an ecobee room occupancy sensor, a person entity.
+//    An entity says "present" when its state is in PANEL_PRESENCE_PRESENT_STATES (default "on,home"). Any other usable
+//    state ("off", "not_home") says "away". unavailable, unknown and failed reads are ignored.
+//    The panel keeps its normal level if ANY usable entity says present, and dims only when ALL usable ones say away.
+//    No usable entity at all: normal day/night level.
+//  - POST /api/panel/presence { locked } with PANEL_PRESENCE_TOKEN (fallback, used only when Home Assistant gave no
+//    usable answer; needs the optional Mac agent in firmware/crowpanel-21/mac-presence).
+// Away means PANEL_AWAY_BRIGHTNESS (default 1; the firmware treats 0 as 1, so the backlight never goes fully dark)
+// instead of the day/night level. A POSTed report older than PANEL_PRESENCE_STALE_S (default 180) is ignored.
+export interface HaPresence { url: string; haToken: string; entities: string[]; presentStates: string[] }
+export interface PresenceConfig { token?: string; ha?: HaPresence; awayBr: number; staleMs: number }
+export interface PresenceReport { away: boolean; atMs: number }
+
+const list = (v: string | undefined): string[] => (v ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+
+export function parsePresenceConfig(env: Record<string, string | undefined>): PresenceConfig | null {
+  const token = env.PANEL_PRESENCE_TOKEN?.trim() || undefined;
+  const entities = list(env.PANEL_PRESENCE_ENTITY).slice(0, 8);
+  const url = env.HA_URL?.trim().replace(/\/$/, ''), haToken = env.HA_TOKEN?.trim();
+  const present = list(env.PANEL_PRESENCE_PRESENT_STATES);
+  const ha = entities.length && url && haToken
+    ? { url, haToken, entities, presentStates: (present.length ? present : ['on', 'home']).map((x) => x.toLowerCase()) }
+    : undefined;
+  if (!token && !ha) return null;
+  const s = Number(env.PANEL_PRESENCE_STALE_S);
+  const staleS = env.PANEL_PRESENCE_STALE_S?.trim() && Number.isFinite(s) && s >= 10 ? Math.min(86_400, Math.round(s)) : 180;
+  return { token, ha, awayBr: pct(env.PANEL_AWAY_BRIGHTNESS, 1), staleMs: staleS * 1000 };
+}
+
+// states: one raw state per entity, null = read failed. true = away, false = present, null = nothing usable.
+export function awayFromStates(states: (string | null)[], presentStates: string[]): boolean | null {
+  let usable = 0;
+  for (const raw of states) {
+    const st = raw?.trim().toLowerCase();
+    if (!st || st === 'unavailable' || st === 'unknown') continue;
+    if (presentStates.includes(st)) return false;
+    usable++;
+  }
+  return usable ? true : null;
+}
+
+// base: the day/night level (undefined when dimming is off). Returns what "br" should be, undefined = leave it out.
+export function effectiveBrightness(base: number | undefined, cfg: PresenceConfig | null | undefined, rep: PresenceReport | null | undefined, nowMs: number): number | undefined {
+  if (!cfg || !rep || !rep.away) return base;
+  const age = nowMs - rep.atMs;
+  return age >= -5_000 && age <= cfg.staleMs ? cfg.awayBr : base;   // a Home Assistant read is stamped with the read time
+}
+
+// Copy of the body with "br" set (or removed), keeping the key order buildPanel uses (br just before bl).
+export function withBr(body: PanelBody, br: number | undefined): PanelBody {
+  if (body.br === br) return body;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(body)) {
+    if (k === 'br') continue;
+    if (k === 'bl' && br !== undefined) out.br = br;
+    out[k] = v;
+  }
+  return out as unknown as PanelBody;
+}
+
 // ---------- aggregator ----------
 
 export type SourceFn = () => Promise<Section>;
@@ -463,23 +528,34 @@ export function fitBody(body: PanelBody): PanelBody {
   return body;
 }
 
-// A 15 s cache around buildPanel; concurrent requests share one in-flight build.
-export function makePanelCache(src: Sources, ttlMs = CACHE_MS, now: () => number = Date.now, dim: DimConfig | null = null) {
+// A 15 s cache around buildPanel; concurrent requests share one in-flight build. The cached build is kept as an
+// object so "br" can follow a fresh lock/unlock report on every request without waiting for the cache to expire.
+export interface PresenceSource { cfg: PresenceConfig | null; read: () => PresenceReport | null | Promise<PresenceReport | null> }
+
+export function makePanelCache(src: Sources, ttlMs = CACHE_MS, now: () => number = Date.now, dim: DimConfig | null = null, presence?: PresenceSource) {
   const lastGood = new Map<string, { at: number; sec: Section }>();
   let at = 0;
-  let body: string | null = null;
-  let inflight: Promise<string> | null = null;
+  let body: PanelBody | null = null;
+  let inflight: Promise<PanelBody> | null = null;
+  const render = async (b: PanelBody): Promise<string> => {
+    if (!presence?.cfg) return JSON.stringify(b);
+    const base = dim ? brightnessAt(dim, now()) : undefined;
+    let rep: PresenceReport | null = null;
+    try { rep = await presence.read(); } catch { rep = null; }
+    return JSON.stringify(withBr(b, effectiveBrightness(base, presence.cfg, rep, now())));
+  };
   return async function get(): Promise<string> {
-    if (body && now() - at < ttlMs) return body;
-    if (inflight) return inflight;
-    inflight = (async () => {
-      try {
-        const b = await buildPanel(src, { nowMs: now(), lastGood, dim });
-        body = JSON.stringify(b);
-        at = now();
-        return body;
-      } finally { inflight = null; }
-    })();
-    return inflight;
+    if (body && now() - at < ttlMs) return render(body);
+    if (!inflight) {
+      inflight = (async () => {
+        try {
+          const b = await buildPanel(src, { nowMs: now(), lastGood, dim });
+          body = b;
+          at = now();
+          return b;
+        } finally { inflight = null; }
+      })();
+    }
+    return render(await inflight);
   };
 }

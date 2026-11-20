@@ -6,7 +6,7 @@ substitutions:
   # Knob feel. Counts per step: raise it if one click skips a screen. Direction: 1 clockwise = next, -1 reverses it.
   knob_counts_per_step: "1"
   knob_direction: "1"
-  poll_every: 20s
+  poll_every: 10s
 
 esphome:
   name: crowpanel-21
