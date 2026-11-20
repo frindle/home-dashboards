@@ -428,7 +428,7 @@ export function workDayMean(data: NeedData, asOf: string): number | null {
 export interface LiveNeed {
   work: number | null;          // % per work day, no margin
   off: number | null;           // % per day off, no margin
-  workSource: string;           // 'curve' | 'sparse' | 'override' | 'max' | 'measured'
+  workSource: string;           // 'curve' | 'sparse' | 'override' | 'max' | 'measured' | 'commute' (lib/commuteFloor.ts)
   tempF: number | null;         // temperature the work need was planned at
 }
 
