@@ -434,7 +434,7 @@ static void test_links() {
       CHECK(!has_text(d, n >= 4 ? big[p] : small[p]));
       CHECK(find_text(d, "L1") != nullptr && has_text(d, "press to go back"));
       if (n == 5) { CHECK(find_text(d, "L4") != nullptr); CHECK(count_font(d, F40) == 0); }
-      if (n == 9) { CHECK(find_text(d, "L6") && !find_text(d, "L7")); }   // 7 rows fit inside the circle
+      if (n == 9) { CHECK(find_text(d, "+3 MORE") && count_font(d, F40) == 0); }   // 6 links and the note
       for (int i = 0; i < d.n; i++) if (d.it[i].k == K_TEXT) CHECK(d.it[i].y <= 372 + 20);
     }
   }
@@ -461,6 +461,153 @@ static void test_alert_dots() {
     for (int i = 0; i < d.n; i++) if (d.it[i].k == K_RECT && d.it[i].h == 10) { dots++; if (d.it[i].bw == 2) hollow++; if (d.it[i].w == 22) wide++; }
     if (n <= 7) { CHECK(dots == n + 1 && hollow == 1 && wide == 1); } else CHECK(dots == 0);
   }
+}
+
+
+// ---- Network detail: sort by data used in the period; 8 or more links end with "+N MORE"
+// Link i uses (i+1) GB in 24 h, (n-i) * 10 GB in 7 d (reversed), and a mixed order in 30 d.
+static Feed links_feed(int n) {
+  std::string l;
+  for (int i = 0; i < n; i++) {
+    char b[200];
+    int d1 = 10 + i, d7 = 10 * (n - i), d30 = ((i * 7) % n + 1) * 100;
+    snprintf(b, sizeof b, "%s{\"n\":\"L%d\",\"d\":1.5,\"u\":0.5,\"t1\":[%d,1],\"t7\":[%d,2],\"t30\":[%d,3]}", i ? "," : "", i, d1, d7, d30);
+    l += b;
+  }
+  std::string s = body("g", "", "", "");
+  size_t a = s.find("\"nw\":{"), z = s.find(",\"sd\":{");
+  s = s.substr(0, a) + R"("nw":{"ok":1,"src":"wan","tp":"r","l":[)" + l + "]}" + s.substr(z);
+  Feed f; load(f, s, 1000); f.at_ms = 1000;
+  return f;
+}
+static Scene detail_of(const Feed &f, int period) {
+  Nav nv; nv.topic = T_NW; nv.detail = true; nv.sub = period;
+  return sc_of(f, nv, 2000);
+}
+// y of the link-name text "L<i>"; -1 when it is not drawn
+static int ly(const Scene &s, int i) { char nm[8]; snprintf(nm, sizeof nm, "L%d", i); const Item *t = find_text(s, nm); return t ? t->y : -1; }
+
+static void test_net_detail() {
+  for (int n : {7, 8, 12}) {
+    Feed f = links_feed(n);
+    for (int p = 0; p < 3; p++) {
+      Scene d = detail_of(f, p); check_fit(d, "net detail");
+      int shown = 0;
+      for (int i = 0; i < n; i++) if (ly(d, i) >= 0) shown++;
+      if (n == 7) { CHECK(shown == 7 && !has_text(d, "MORE")); }
+      else {
+        char more[16]; snprintf(more, sizeof more, "+%d MORE", n - 6);
+        CHECK(shown == 6); CHECK(has_text(d, more));
+        const Item *m = find_text(d, more);
+        CHECK(m && m->font == F15 && m->col == C_LABEL);              // small grey, like the overview's
+        for (int i = 0; i < d.n; i++) if (d.it[i].k == K_TEXT && d.it[i].font == F22 && d.it[i].y >= m->y) CHECK(false);   // the 7th row, below every link
+        // the 6 shown are exactly the 6 with the most data in this period, biggest first
+        int best[12], cnt = 0;
+        for (int i = 0; i < n; i++) best[cnt++] = i;
+        for (int i = 1; i < cnt; i++) for (int j = i; j > 0 && sc::used_in(f.nw.l[best[j]], p) > sc::used_in(f.nw.l[best[j - 1]], p); j--) { int t = best[j]; best[j] = best[j - 1]; best[j - 1] = t; }
+        for (int i = 0; i < 6; i++) CHECK(ly(d, best[i]) >= 0);
+        for (int i = 0; i < 5; i++) CHECK(ly(d, best[i]) < ly(d, best[i + 1]));
+        for (int i = 6; i < n; i++) CHECK(ly(d, best[i]) < 0);
+      }
+    }
+  }
+  // order differs per period: 8 links
+  Feed f = links_feed(8);
+  Scene d1 = detail_of(f, 0), d30 = detail_of(f, 2), d7 = detail_of(f, 1);
+  CHECK(ly(d1, 7) >= 0 && ly(d1, 6) >= 0 && ly(d1, 0) < 0 && ly(d1, 1) < 0);       // 24 h: L7 biggest, L0/L1 hidden
+  CHECK(ly(d1, 7) < ly(d1, 6));
+  CHECK(ly(d7, 0) >= 0 && ly(d7, 1) >= 0 && ly(d7, 6) < 0 && ly(d7, 7) < 0);       // 7 d: reversed, L0 biggest
+  CHECK(ly(d7, 0) < ly(d7, 1));
+  // 30 d: ((i*7)%8+1)*100 -> L0=100 L1=800 L2=700 L3=600 L4=500 L5=400 L6=300 L7=200; L0 and L7 are the two smallest, hidden
+  CHECK(ly(d30, 0) < 0 && ly(d30, 7) < 0 && ly(d30, 1) < ly(d30, 2) && ly(d30, 2) < ly(d30, 3));
+  CHECK(ly(d30, 1) >= 0 && ly(d30, 6) >= 0);
+  // a link with no totals for the period counts as 0 and goes last
+  Feed g = links_feed(8);
+  g.nw.l[7].has_t[0] = false;
+  Scene dg = detail_of(g, 0);
+  CHECK(ly(dg, 7) < 0 && has_text(dg, "+2 MORE"));
+}
+
+// ---- every scene fits the LVGL object pools of panel_ui.h
+struct Worst { int used[4] = {0, 0, 0, 0}; char at[4][64] = {"", "", "", ""}; };
+static const int POOL[4] = {UI_ARCS, UI_RECTS, UI_LINES, UI_LABELS};
+static const char *POOLN[4] = {"arcs", "rects", "lines", "labels"};
+static Worst g_worst;
+static std::string g_over;
+static void pool_check(const Scene &s, const char *name) {
+  PoolUse u = pool_use(s);
+  int v[4] = {u.arcs, u.rects, u.lines, u.labels};
+  for (int k = 0; k < 4; k++) {
+    if (v[k] > g_worst.used[k]) { g_worst.used[k] = v[k]; snprintf(g_worst.at[k], sizeof g_worst.at[k], "%s", name); }
+    checks++;
+    if (v[k] > POOL[k]) { fails++; printf("FAIL pool: %s needs %d %s, pool is %d (over by %d)\n", name, v[k], POOLN[k], POOL[k], v[k] - POOL[k]); }
+  }
+  CHECK(s.n < MAXI && s.ng <= MAXG);   // the scene builder itself clips at MAXI
+}
+// the 16-disk storage section
+static Feed disks16(Feed f) {
+  std::string d;
+  for (int i = 0; i < 16; i++) {
+    char b[120]; snprintf(b, sizeof b, "%s{\"n\":\"disk%d\",\"r\":\"%c\",\"u\":%d,\"sp\":%d,\"t\":%d}", i ? "," : "", i, i == 0 ? 'p' : i == 15 ? 'c' : 'd', i == 3 ? 99 : 40 + i, i % 2, 30 + i);
+    d += b;
+  }
+  std::string sd = R"({"ok":1,"tot":{"s":192000,"u":190500},"nd":16,"spin":5,"arr":"STOPPING","par":1,"pp":87,"pe":0,"na":0,"nwn":1,"d":[)" + d + "]}";
+  std::string j = body("g", "", "", ""); size_t a = j.find(",\"sd\":{"), z = j.find(",\"ev\":{");
+  j = j.substr(0, a) + ",\"sd\":" + sd + j.substr(z);
+  load(f, j, 1000); f.at_ms = 1000;
+  return f;
+}
+static void sweep(const Feed &f, const char *tag, const Clock &ck) {
+  char nm[64];
+  for (int br : {60, 3}) {
+    for (int t = 0; t < T_COUNT; t++) {
+      Nav n; n.topic = t;
+      snprintf(nm, sizeof nm, "%s t%d%s", tag, t, br == 3 ? " night" : "");
+      pool_check(sc_of(f, n, 2000, br, ck), nm);
+      if (br != 3) {
+        int dc = detail_count(f, t);
+        for (int sub = 0; sub < dc; sub++) {
+          n.detail = true; n.sub = sub;
+          snprintf(nm, sizeof nm, "%s t%d detail%d", tag, t, sub);
+          pool_check(sc_of(f, n, 2000, br, ck), nm);
+        }
+      }
+    }
+  }
+  if (f.nal > 0) {   // alert view, each alert and the Done card
+    Nav nv; on_feed(nv, f, 1000); on_long_press(nv, f, 2000);
+    for (int i = 0; i <= f.nal; i++) {
+      snprintf(nm, sizeof nm, "%s alert %d/%d", tag, i + 1, f.nal);
+      pool_check(sc_of(f, nv, 2500 + i, 60, ck), nm);
+      on_rotate(nv, f, 1, 3000 + i);
+    }
+  }
+  // old data and no connection
+  snprintf(nm, sizeof nm, "%s offline", tag);
+  Nav n; n.topic = T_NW; pool_check(sc_of(f, n, 2000 + 900000, 60, ck), nm);
+}
+static void test_pools() {
+  Clock ck; ck.valid = true; ck.t = 1763063880;
+  g_worst = Worst();
+  Feed base = green(); base.at_ms = 1000;
+  sweep(base, "base", ck);
+  sweep(disks16(green()), "disks16", ck);
+  for (int n : {12})
+    sweep(feed_with(n, 0), n == 12 ? "links12" : "links", ck);
+  sweep(feed_with(12, 12), "links12+alerts12", ck);
+  sweep(feed_with(3, 12, 'r'), "alerts12 red", ck);
+  sweep(disks16(feed_with(12, 12)), "disks16+links12+alerts12", ck);
+  {   // 4 Macs, worst-case strings (as in preview/shots.py "worst")
+    std::string m = R"({"n":"studio-m4-ultra","s":"serving","on":1,"w":1234,"td":123456,"tm":4567800,"jobs":12,"age":3},{"n":"mini-c","s":"serving","on":1,"w":9,"td":612,"tm":21800,"jobs":0,"age":5},{"n":"laptop-b","s":"idle","on":1,"td":257,"tm":2395,"age":40},{"n":"desk-d","s":"silent","on":0,"td":0,"tm":200,"age":10800})";
+    Feed f; load(f, body("r", "", "", "", m.c_str()), 1000); f.at_ms = 1000;
+    sweep(f, "macs4 worst", ck);
+    Feed w = feed_with(3, 0);
+    snprintf(w.nw.l[0].n, sizeof w.nw.l[0].n, "Fiber-10G-wan"); w.nw.l[0].d = 1234.5f; w.nw.l[0].u = 987.6f;
+    w.nw.l[0].t[2][0] = 23456.7f; w.nw.l[0].t[2][1] = 5432.1f;
+    snprintf(w.sd.d[0].n, sizeof w.sd.d[0].n, "disk-long-1");
+    sweep(w, "worst strings", ck);
+  }
+  for (int k = 0; k < 4; k++) printf("pool %-6s peak %2d of %2d (headroom %2d) at: %s\n", POOLN[k], g_worst.used[k], POOL[k], POOL[k] - g_worst.used[k], g_worst.at[k]);
 }
 
 static void test_states() {
@@ -531,6 +678,8 @@ int main() {
   test_parse(); test_alert_parse(); test_nav(); test_gesture(); test_view_stepping(); test_alert_model(); test_scene(); test_states(); test_system(); test_brightness();
   test_links();
   test_alert_dots();
+  test_net_detail();
+  test_pools();
   printf("%d checks, %d failed\n", checks, fails);
   return fails ? 1 : 0;
 }

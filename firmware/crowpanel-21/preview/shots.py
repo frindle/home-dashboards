@@ -112,6 +112,21 @@ def nlinks(n):
 for n in (4, 5, 6, 9):
     F["links%d" % n] = nlinks(n)
 
+def nlinks_period(n):
+    """n links whose order of data used differs between 24 h, 7 d and 30 d."""
+    f = design()
+    names = ["Cox", "Starlink", "Unraid", "Verizon", "Lumen", "Comcast", "Frontier", "Spectrum", "T-Mobile", "Mint", "Visible", "Ting"]
+    ls = []
+    for i in range(n):
+        t1 = [round(20 + ((i * 5) % n) * 40.5, 1), round(5 + i * 3.1, 1)]
+        t7 = [round(100 + (n - i) * 210.3, 1), round(40 + (n - i) * 55.5, 1)]
+        t30 = [round(300 + ((i * 7) % n) * 640.7, 1), round(90 + ((i * 7) % n) * 130.2, 1)]
+        ls.append(dict(n=names[i], d=round(1.5 + i * 3.7, 1), u=round(0.4 + i * 0.6, 1), t1=t1, t7=t7, t30=t30))
+    f["nw"]["l"] = ls
+    return f
+for n in (8, 12):
+    F["linksp%d" % n] = nlinks_period(n)
+
 def nalerts(n):
     f = design(); f["lvl"] = "a"
     f["al"] = [alert("k%d" % i, "nw", "a", "No traffic on link %d. Check it." % (i + 1), 600 + i * 60) for i in range(n)]
@@ -226,7 +241,11 @@ shot("links-6", "links6", at("nw"), "Network overview, 6 links: 4 busiest and +2
 shot("links-9", "links9", at("nw"), "Network overview, 9 links: 4 busiest and +5 MORE")
 shot("links-5-detail", "links5", at("nw", True), "Network detail, 5 links (small LAST 24 H label)")
 shot("links-5-detail-week", "links5", at("nw", True, "R+"), "Network detail, 5 links, 7 days")
-shot("links-9-detail", "links9", at("nw", True), "Network detail, 9 links (7 rows fit)")
+shot("links-9-detail", "links9", at("nw", True), "Network detail, 9 links: 6 biggest and +3 MORE")
+shot("links-8-detail", "linksp8", at("nw", True), "Network detail, 8 links, 24 h: 6 biggest and +2 MORE")
+shot("links-8-detail-week", "linksp8", at("nw", True, "R+"), "Network detail, 8 links, 7 days (different order and links)")
+shot("links-8-detail-month", "linksp8", at("nw", True, "R+ R+"), "Network detail, 8 links, 30 days")
+shot("links-12-detail", "linksp12", at("nw", True), "Network detail, 12 links, 24 h: 6 biggest and +6 MORE")
 shot("alerts-1", "alerts1x", "L", "1 alert: one dot plus the hollow Done dot")
 shot("alerts-7", "alerts7x", "L R+ R+", "7 alerts: seven dots plus hollow, third current")
 shot("alerts-7-done", "alerts7x", "L R+ R+ R+ R+ R+ R+ R+", "7 alerts: the Done card, hollow dot current")
