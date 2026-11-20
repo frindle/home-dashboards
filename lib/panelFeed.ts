@@ -10,10 +10,17 @@
 //   lvl overall alert level: "g" green, "a" amber, "r" red
 //   why up to 3 short reasons for amber/red, e.g. "silent:m4max", "array:STOPPED", "wan:down", "src:nw"
 //   go  only on red: the section the panel jumps to, "bl" (a silent Mac) or "sd" (array, parity, cache >= 90%)
-//   bl  Darkbloom per Mac:  m: [{ n name, on 1 serving, s state text, w watts, jobs sandbox jobs,
+//   rr  only on red: stable keys of the red reasons ("silent:<mac>", "array", "parity", "cache", "unraid"), at most 4.
+//       The key does not change when a number inside the reason changes (cache 91% -> 92%), so the panel can tell a NEW
+//       reason (a key it has not seen in this red spell) from the same one moving. why[] is for display only.
+//   br  only when PANEL_NIGHT_HOURS is set: backlight brightness the panel should use now, percent 1..100
+//   bl  Darkbloom per Mac (at most MAX_MACS):  m: [{ n name, on 1 serving, s state text, w watts, jobs sandbox jobs,
 //                                 td earned today (cents), tm earned this month (cents), age seconds since last
 //                                 power minute, sl 1 silent (alert) }],   al: open bloom-ledger alert count
-//   nw  network:            src "wan" | "unraid",  l: [{ n name, d down Mbps, u up Mbps }]
+//   nw  network:            src "wan" | "unraid",  l: [{ n name, d down Mbps, u up Mbps,
+//                                 t1 / t7 / t30: [down GB, up GB] over the last 1 / 7 / 30 days (optional, per link) }],
+//                                 tp "r" the t* periods are rolling windows (a later calendar endpoint would send "c")
+//                           Links are Cox, Starlink (from the monitor) and Unraid (from Influx), at most MAX_LINKS.
 //   sd  storage:            tot: { s size GB, u used GB },  d: [{ n name, r role d|c|p, u used %, sp 1 spinning,
 //                                 (a multi-SSD cache pool is one "cache" row)
 //                                 t temp C }],  spin spinning disk count, nd disk count,  arr array state,
@@ -29,6 +36,9 @@ export const CACHE_MS = 15_000;
 export const SOURCE_TIMEOUT_MS = 6_000;
 export const LAST_GOOD_MAX_MS = 10 * 60_000;   // a failed source shows its last good copy (st=1) this long
 export const INFLUX_FRESH_S = 5 * 60;          // Unraid points older than this make storage/network stale
+export const MAX_MACS = 4;                     // the firmware has room for this many Darkbloom pages
+export const MAX_LINKS = 4;                    // and this many network links
+export const MAX_DISKS = 16;                   // and this many disk rows
 
 export type Level = 'g' | 'a' | 'r';
 export type Section = { ok: 0 | 1; st: 0 | 1; [k: string]: unknown };
@@ -126,6 +136,9 @@ export function parseStorage(rows: FluxRow[], nowS: number): Section {
     if (d.r !== 'p') { s += (d._sz as number | undefined) ?? 0; u += (d._us as number | undefined) ?? 0; }
     delete (d as Record<string, unknown>)._sz; delete (d as Record<string, unknown>)._us;
   }
+  const nDisks = list.length;
+  const spinning = list.filter((d) => d.sp === 1).length;
+  list.splice(MAX_DISKS);   // the firmware shows at most MAX_DISKS rows; totals above already counted every disk
   const kbToGb = (kb: number) => Math.round(kb / 1_000_000);
   return {
     ok: 1,
@@ -133,8 +146,8 @@ export function parseStorage(rows: FluxRow[], nowS: number): Section {
     ...compact({
       tot: { s: kbToGb(s), u: kbToGb(u) },
       d: list,
-      spin: list.filter((d) => d.sp === 1).length,
-      nd: list.length,
+      spin: spinning,
+      nd: nDisks,
       arr: typeof arr.state === 'string' && arr.state ? str(arr.state, 12) : undefined,
       par: arr.parity_running === undefined ? undefined : arr.parity_running ? 1 : 0,
       pp: rnd(arr.parity_progress),
@@ -177,7 +190,7 @@ export function parseWan(body: unknown): Section {
     if (d === undefined && u === undefined) return [];
     return [compact({ n: str(String(r.name ?? r.iface ?? '').replace(/ WAN$/, ''), 10), d: rnd(d, 1), u: rnd(u, 1) })];
   });
-  return l.length ? { ok: 1, st: 0, src: 'wan', l } : { ok: 0, st: 0 };
+  return l.length ? { ok: 1, st: 0, src: 'wan', l: l.slice(0, MAX_LINKS) } : { ok: 0, st: 0 };
 }
 
 // Fallback: Unraid's own traffic, Influx unraid_net last() rx_bps / tx_bps per iface (bits/s).
@@ -200,6 +213,67 @@ export function parseUnraidNet(rows: FluxRow[], nowS: number): Section {
   return { ok: 1, st: newest && nowS - newest > INFLUX_FRESH_S ? 1 : 0, src: 'unraid', l: [compact({ n: 'Unraid', d: rnd(main.d, 1), u: rnd(main.u, 1) })] };
 }
 
+// network-bandwidth-monitor GET /api/totals: { "1d": [{ iface, rx_bytes, tx_bytes, total_bytes }], "7d": [...], "30d": [...] }
+// (it also sends 14d, which is ignored). Rolling windows, not calendar periods.
+export type NetTotals = { t1?: [number, number]; t7?: [number, number]; t30?: [number, number] };
+export const DEFAULT_TOTALS_MAP: Record<string, string> = { Cox: 'fw_wan_eth0', Starlink: 'fw_wan_eth3', Unraid: 'br0' };
+
+// "Cox=fw_wan_eth0,Starlink=fw_wan_eth3,Unraid=br0" -> link name to the monitor's interface name. Junk entries are skipped.
+export function parseTotalsMap(text: string | undefined): Record<string, string> {
+  if (!text?.trim()) return { ...DEFAULT_TOTALS_MAP };
+  const out: Record<string, string> = {};
+  for (const part of text.split(',')) {
+    const [k, v] = part.split('=').map((x) => x.trim());
+    if (k && v) out[str(k, 10)] = v;
+  }
+  return Object.keys(out).length ? out : { ...DEFAULT_TOTALS_MAP };
+}
+
+const gb = (bytes: number): number => {
+  const v = bytes / 1e9;
+  return v >= 100 ? Math.round(v) : v >= 10 ? Math.round(v * 10) / 10 : Math.round(v * 100) / 100;
+};
+
+export function parseNetTotals(body: unknown, map: Record<string, string> = DEFAULT_TOTALS_MAP): Record<string, NetTotals> {
+  const out: Record<string, NetTotals> = {};
+  if (!body || typeof body !== 'object') return out;
+  const periods = [['t1', '1d'], ['t7', '7d'], ['t30', '30d']] as const;
+  for (const [link, iface] of Object.entries(map)) {
+    const t: NetTotals = {};
+    for (const [key, period] of periods) {
+      const rows = (body as Record<string, unknown>)[period];
+      if (!Array.isArray(rows)) continue;
+      const r = rows.find((x) => x && (x as Record<string, unknown>).iface === iface) as Record<string, unknown> | undefined;
+      const rx = num(r?.rx_bytes), tx = num(r?.tx_bytes);
+      if (rx !== undefined && tx !== undefined) t[key] = [gb(rx), gb(tx)];
+    }
+    if (Object.keys(t).length) out[link] = t;
+  }
+  return out;
+}
+
+// Adds t1/t7/t30 to each link that has totals and marks the periods as rolling. Never changes ok/st.
+export function withNetTotals(sec: Section, totals: Record<string, NetTotals> | undefined): Section {
+  const l = (sec as Section & { l?: Record<string, unknown>[] }).l;
+  if (!sec.ok || !l || !totals) return sec;
+  let any = false;
+  const l2 = l.map((x) => {
+    const t = totals[String(x.n)];
+    if (!t) return x;
+    any = true;
+    return { ...x, ...t };
+  });
+  return any ? { ...sec, l: l2, tp: 'r' } : sec;
+}
+
+// Adds the Unraid link (from Influx) after the monitor's WAN links. Only for a WAN section; capped at MAX_LINKS.
+export function withExtraLink(sec: Section, extra: Section | undefined): Section {
+  const l = (sec as Section & { l?: unknown[] }).l;
+  const e = extra as (Section & { l?: unknown[] }) | undefined;
+  if (!sec.ok || sec.src !== 'wan' || !l || !e?.ok || !e.l?.length) return sec;
+  return { ...sec, l: [...l, e.l[0]].slice(0, MAX_LINKS) };
+}
+
 // ---------- Darkbloom (bloom-ledger) ----------
 
 export interface BloomInputs {
@@ -214,7 +288,7 @@ export function parseBloom(inp: BloomInputs): Section {
   const alerts = Array.isArray(inp.alerts) ? (inp.alerts as Record<string, unknown>[]) : [];
   const silent = new Set(alerts.filter((a) => a.alert === 'machine-silent').map((a) => String(a.machine_id)));
   let anyStale = false;
-  const m = mac.map((r: Record<string, unknown>) => {
+  const m = mac.slice(0, MAX_MACS).map((r: Record<string, unknown>) => {
     const id = String(r.machine_id ?? '?');
     const e = inp.earned?.[id];
     if (r.stale === true) anyStale = true;
@@ -265,20 +339,20 @@ export const CACHE_AMBER_PCT = 80;
 export const CACHE_RED_PCT = 90;
 
 // go: the section the panel jumps to on red ("bl" Darkbloom, "sd" storage), from the first red reason.
-export function alertLevel(sec: { bl: Section; nw: Section; sd: Section; ev: Section }): { lvl: Level; why: string[]; go?: string } {
-  const red: string[] = [], amber: string[] = [];
+export function alertLevel(sec: { bl: Section; nw: Section; sd: Section; ev: Section }): { lvl: Level; why: string[]; go?: string; rr?: string[] } {
+  const red: string[] = [], amber: string[] = [], keys: string[] = [];
   let go: string | undefined;
   const bl = sec.bl as Section & { m?: { n: string; sl?: number }[]; al?: number };
-  for (const m of bl.m ?? []) if (m.sl) { red.push(`silent:${m.n}`); go ??= 'bl'; }
+  for (const m of bl.m ?? []) if (m.sl) { red.push(`silent:${m.n}`); keys.push(`silent:${m.n}`); go ??= 'bl'; }
   if (bl.ok && (bl.al ?? 0) > 0 && !red.length) amber.push(`bloom:${bl.al}`);
   const sd = sec.sd as Section & { arr?: string; pe?: number; na?: number; nwn?: number; d?: { n: string; r?: string; u?: number }[] };
   if (sd.ok) {
     const n = red.length;
-    if (sd.arr && sd.arr.toUpperCase() !== 'STARTED') red.push(`array:${sd.arr}`);
-    if ((sd.pe ?? 0) > 0) red.push('parity:err');
+    if (sd.arr && sd.arr.toUpperCase() !== 'STARTED') { red.push(`array:${sd.arr}`); keys.push('array'); }
+    if ((sd.pe ?? 0) > 0) { red.push('parity:err'); keys.push('parity'); }
     const cache = (sd.d ?? []).find((d) => d.r === 'c' && d.u !== undefined);
-    if (cache && (cache.u ?? 0) >= CACHE_RED_PCT) red.push(`cache:${cache.u}%`);
-    if ((sd.na ?? 0) > 0) red.push(`unraid:${sd.na}!`);
+    if (cache && (cache.u ?? 0) >= CACHE_RED_PCT) { red.push(`cache:${cache.u}%`); keys.push('cache'); }
+    if ((sd.na ?? 0) > 0) { red.push(`unraid:${sd.na}!`); keys.push('unraid'); }
     else if ((sd.nwn ?? 0) > 0) amber.push(`unraid:${sd.nwn}w`);
     if (cache && (cache.u ?? 0) >= CACHE_AMBER_PCT && (cache.u ?? 0) < CACHE_RED_PCT) amber.push(`cache:${cache.u}%`);
     const full = (sd.d ?? []).find((d) => d.r !== 'c' && (d.u ?? 0) >= 95);
@@ -292,9 +366,37 @@ export function alertLevel(sec: { bl: Section; nw: Section; sd: Section; ev: Sec
     if (!sec[k].ok) amber.push(`src:${k}`);
     else if (sec[k].st) amber.push(`old:${k}`);
   }
-  if (red.length) return { lvl: 'r', why: [...red, ...amber].slice(0, 3), ...(go ? { go } : {}) };
+  if (red.length) return { lvl: 'r', why: [...red, ...amber].slice(0, 3), ...(go ? { go } : {}), rr: keys.slice(0, 4) };
   if (amber.length) return { lvl: 'a', why: amber.slice(0, 3) };
   return { lvl: 'g', why: [] };
+}
+
+// ---------- night dimming (optional) ----------
+
+// PANEL_NIGHT_HOURS="22-7" turns it on: between those local hours the panel is told to use PANEL_NIGHT_BRIGHTNESS
+// (default 5), otherwise PANEL_DAY_BRIGHTNESS (default 60). PANEL_TZ picks the zone (default: the server's own).
+export interface DimConfig { startH: number; endH: number; night: number; day: number; tz?: string }
+
+const pct = (v: string | undefined, dflt: number): number => {
+  const n = Number(v);
+  return v?.trim() && Number.isFinite(n) ? Math.min(100, Math.max(1, Math.round(n))) : dflt;
+};
+
+export function parseDimConfig(env: Record<string, string | undefined>): DimConfig | null {
+  const m = /^(\d{1,2})\s*-\s*(\d{1,2})$/.exec(env.PANEL_NIGHT_HOURS?.trim() ?? '');
+  if (!m) return null;
+  const startH = Number(m[1]), endH = Number(m[2]);
+  if (startH > 23 || endH > 23 || startH === endH) return null;
+  let tz = env.PANEL_TZ?.trim() || undefined;
+  if (tz) { try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); } catch { tz = undefined; } }
+  return { startH, endH, night: pct(env.PANEL_NIGHT_BRIGHTNESS, 5), day: pct(env.PANEL_DAY_BRIGHTNESS, 60), tz };
+}
+
+export function brightnessAt(cfg: DimConfig, nowMs: number): number {
+  const parts = new Intl.DateTimeFormat('en-US', { hour: 'numeric', hourCycle: 'h23', timeZone: cfg.tz }).formatToParts(new Date(nowMs));
+  const h = Number(parts.find((p) => p.type === 'hour')?.value ?? 0) % 24;
+  const night = cfg.startH < cfg.endH ? h >= cfg.startH && h < cfg.endH : h >= cfg.startH || h < cfg.endH;
+  return night ? cfg.night : cfg.day;
 }
 
 // ---------- aggregator ----------
@@ -303,7 +405,7 @@ export type SourceFn = () => Promise<Section>;
 export interface Sources { bl: SourceFn; nw: SourceFn; sd: SourceFn; ev: SourceFn }
 
 export interface PanelBody {
-  v: 1; t: number; lvl: Level; why: string[]; go?: string;
+  v: 1; t: number; lvl: Level; why: string[]; go?: string; rr?: string[]; br?: number;
   bl: Section; nw: Section; sd: Section; ev: Section;
 }
 
@@ -311,6 +413,7 @@ export interface AggOpts {
   nowMs?: number;
   timeoutMs?: number;
   lastGood?: Map<string, { at: number; sec: Section }>;   // survives across calls (route keeps one)
+  dim?: DimConfig | null;                                  // night dimming; null/undefined leaves "br" out
 }
 
 async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
@@ -336,12 +439,32 @@ export async function buildPanel(src: Sources, opts: AggOpts = {}): Promise<Pane
     return { ok: 0, st: 0 };
   }));
   const [bl, nw, sd, ev] = out;
-  const { lvl, why, go } = alertLevel({ bl, nw, sd, ev });
-  return { v: 1, t: Math.floor(nowMs / 1000), lvl, why, ...(go ? { go } : {}), bl, nw, sd, ev };
+  const { lvl, why, go, rr } = alertLevel({ bl, nw, sd, ev });
+  const body: PanelBody = {
+    v: 1, t: Math.floor(nowMs / 1000), lvl, why, ...(go ? { go } : {}), ...(rr ? { rr } : {}),
+    ...(opts.dim ? { br: brightnessAt(opts.dim, nowMs) } : {}), bl, nw, sd, ev,
+  };
+  return fitBody(body);
+}
+
+// The firmware reads at most PANEL_MAX_BYTES. If a body is over (many disks, long names), drop the least important
+// detail first: network totals, then disk temperatures, then the per-disk rows (the totals stay).
+export function fitBody(body: PanelBody): PanelBody {
+  const size = () => JSON.stringify(body).length;
+  if (size() <= PANEL_MAX_BYTES) return body;
+  const nw = body.nw as Section & { l?: Record<string, unknown>[] };
+  if (nw.l) body.nw = { ...nw, l: nw.l.map(({ t1, t7, t30, ...r }) => r) };
+  if (size() <= PANEL_MAX_BYTES) return body;
+  const sd = body.sd as Section & { d?: Record<string, unknown>[] };
+  if (sd.d) body.sd = { ...sd, d: sd.d.map(({ t, ...r }) => r) };
+  if (size() <= PANEL_MAX_BYTES) return body;
+  const sd2 = body.sd as Section & { d?: unknown[] };
+  if (sd2.d) { const { d, ...rest } = sd2; body.sd = rest as Section; }
+  return body;
 }
 
 // A 15 s cache around buildPanel; concurrent requests share one in-flight build.
-export function makePanelCache(src: Sources, ttlMs = CACHE_MS, now: () => number = Date.now) {
+export function makePanelCache(src: Sources, ttlMs = CACHE_MS, now: () => number = Date.now, dim: DimConfig | null = null) {
   const lastGood = new Map<string, { at: number; sec: Section }>();
   let at = 0;
   let body: string | null = null;
@@ -351,7 +474,7 @@ export function makePanelCache(src: Sources, ttlMs = CACHE_MS, now: () => number
     if (inflight) return inflight;
     inflight = (async () => {
       try {
-        const b = await buildPanel(src, { nowMs: now(), lastGood });
+        const b = await buildPanel(src, { nowMs: now(), lastGood, dim });
         body = JSON.stringify(b);
         at = now();
         return body;
