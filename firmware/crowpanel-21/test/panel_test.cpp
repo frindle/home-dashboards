@@ -73,12 +73,23 @@ static void test_parse() {
   CHECK(load(l, R"({"v":1,"br":150})", 1) && l.br == 100);
 }
 
-// Red feed helper: reasons are keys, go says where.
-static Feed red(const char *go, const char *rr, const char *why = "\"x\"") {
-  Feed f; load(f, body("r", go, rr, why), 0); return f;
-}
 static Feed green() { Feed f; load(f, body("g", "", "", ""), 0); return f; }
 static Feed amber() { Feed f; load(f, body("a", "", "", "\"cache:85%\""), 0); return f; }
+
+// A feed with an alert list ("al"), optional "ac" and usage section ("us").
+static Feed with(const char *al, const char *us = nullptr, int ac = 0, uint32_t at = 0) {
+  std::string b = body("g", "", "", "");
+  std::string add = std::string("\"al\":[") + al + "]";
+  if (ac) add += ",\"ac\":" + std::to_string(ac);
+  if (us) add += std::string(",\"us\":") + us;
+  b.insert(b.find("\"bl\""), add + ",");
+  Feed f; load(f, b, at); return f;
+}
+#define A_CACHE R"({"k":"cache","tp":"sd","sv":"r","m":"The cache pool is 93% full. Free space or move data off it.","a":30})"
+#define A_SILENT R"({"k":"silent:mini","tp":"bl","sv":"r","m":"mini has stopped serving Darkbloom (no activity for over 30 min).","a":5})"
+#define A_WAN R"({"k":"wan","tp":"nw","sv":"a","m":"Every internet link looks idle. The connection may be down.","a":700})"
+#define A_USAGE R"({"k":"usage:5h","tp":"us","sv":"r","m":"Claude 5-hour usage is 96%. Resets in 80 min.","a":0})"
+#define US_OK R"({"ok":1,"st":0,"age":5,"h5":{"p":96,"r":4800},"wk":{"p":40,"r":200000},"m":[{"n":"Opus","p":70,"r":200000},{"n":"Sonnet","p":20,"r":200000}],"bp":30,"lm":900})"
 
 static void test_nav() {
   Feed f = green(); Nav n; uint32_t t = 1000;
@@ -120,75 +131,200 @@ static void test_nav() {
   Feed none = f; none.bl.ok = false; on_tick(n, none, 2); CHECK(!n.detail);
 }
 
-static void test_autoswitch() {
-  Feed g = green(), a = amber();
-  Feed r1 = red("bl", "\"silent:mini\"", "\"silent:mini\"");
-  r1.bl.m[1].sl = true;
-  Nav n; uint32_t t = 10000;
+static int chord(int y, int h);
+static void test_alert_parse() {
+  Feed f = with(A_CACHE "," A_WAN, US_OK, 6, 100);
+  CHECK(f.nal == 2 && f.ac == 6 && strcmp(f.al[0].k, "cache") == 0 && f.al[0].sv == 'r' && f.al[1].sv == 'a' && f.al[1].a == 700);
+  CHECK(strcmp(f.al[0].tp, "sd") == 0 && strstr(f.al[0].m, "93%") != nullptr);
+  CHECK(f.us.present && f.us.ok && f.us.h5.has && f.us.h5.p == 96 && f.us.h5.r == 4800 && f.us.wk.p == 40 && f.us.nm == 2);
+  CHECK(strcmp(f.us.m[0].n, "Opus") == 0 && f.us.bp == 30.0f && f.us.lm == 900);
+  Feed g = green();                                            // older/healthy server: no keys at all
+  CHECK(g.nal == 0 && g.ac == 0 && !g.us.present);
+  Feed h = with("", R"({"ok":0,"st":0})");
+  CHECK(h.us.present && !h.us.ok);
+  // more than the cap and junk entries are tolerated
+  std::string many;
+  for (int i = 0; i < 9; i++) many += std::string(i ? "," : "") + R"({"k":"k)" + std::to_string(i) + R"(","tp":"sd","sv":"r","m":"x"})";
+  many += R"(,{"tp":"sd"})";
+  Feed m = with(many.c_str());
+  CHECK(m.nal == MAX_AL);
+}
 
-  // amber never switches
-  on_feed(n, a, t); CHECK(!n.alert);
+static void test_gesture() {
+  // the long press opens the alert view from EVERY page (overview and detail, every topic) and closes back to the same page
+  Feed f = with(A_CACHE "," A_WAN, US_OK, 0, 1000);
+  uint32_t t = 2000;
+  for (int topic = 0; topic < T_COUNT; topic++) {
+    for (int det = 0; det < 2; det++) {
+      int cnt = det ? detail_count(f, topic) : 1;
+      if (det && cnt == 0) continue;
+      for (int sub = 0; sub < cnt; sub++) {
+        Nav n; n.topic = topic; n.detail = det; n.sub = sub; n.started = true; n.last_knob = t;
+        on_long_press(n, f, t);
+        CHECK(n.alert && !n.auto_open && n.av_i == 0);
+        on_long_press(n, f, t + 10);
+        CHECK(!n.alert && n.topic == topic && n.detail == (bool) det && n.sub == sub);   // back where he was
+      }
+    }
+  }
+  // no alerts: nothing happens; a stale list: nothing happens
+  Feed g = green(); g.at_ms = 1000; Nav n; on_long_press(n, g, t); CHECK(!n.alert);
+  Nav n2; on_long_press(n2, f, 1000 + STALE_MS + 1); CHECK(!n2.alert);
+  // short press is untouched outside the view: detail in, detail out
+  Nav n3; on_press(n3, f, t); CHECK(n3.detail && !n3.alert); on_press(n3, f, t); CHECK(!n3.detail);
+}
 
-  // user browsing Network; red arrives -> jump straight to alert, pointing at the silent Mac
-  on_rotate(n, g, 1, t);
-  CHECK(n.topic == T_NW);
-  on_feed(n, r1, t); CHECK(n.alert && n.alert_topic == T_BL && n.alert_sub == 1);
-  // alert view shows
-  Clock c; View v; r1.at_ms = t; make_view(r1, n, c, t, v);
-  CHECK(strcmp(v.title, "ALERT") == 0 && strcmp(v.big, "MAC SILENT") == 0 && v.ring == C_RED);
-  // same red again: stays, no change
-  on_feed(n, r1, t + 20000); CHECK(n.alert);
+static void test_view_stepping() {
+  Feed f = with(A_CACHE "," A_SILENT "," A_WAN "," A_USAGE, US_OK, 0, 1000);
+  uint32_t t = 2000;
+  Nav n; on_rotate(n, f, 1, t); CHECK(n.topic == T_NW);
+  on_long_press(n, f, t);
+  CHECK(n.alert && n.av_i == 0);
+  on_rotate(n, f, 1, t); CHECK(n.av_i == 1 && n.topic == T_NW);     // turn steps alerts, the page underneath is not moved
+  on_rotate(n, f, 1, t); on_rotate(n, f, 1, t); CHECK(n.av_i == 3);
+  on_rotate(n, f, 1, t); CHECK(n.av_i == 0);                        // wraps
+  on_rotate(n, f, -1, t); CHECK(n.av_i == 3);
+  // short press: that alert's topic page; Claude usage page for the usage alert
+  on_press(n, f, t); CHECK(!n.alert && n.topic == T_US && !n.detail);
+  // silent Mac: its own detail page
+  Nav m; on_long_press(m, f, t); on_rotate(m, f, 1, t); on_press(m, f, t);
+  CHECK(!m.alert && m.topic == T_BL && m.detail && m.sub == 1);
+  // view text: topic, count, whole message, active time (alert's own clock plus time since the feed arrived)
+  Clock c; View v; Nav k; k.alert = true; k.av_i = 1;
+  make_view(f, k, c, 1000 + 70000, v);
+  CHECK(strcmp(v.title, "ALERT 2 OF 4") == 0 && strcmp(v.big, "DARKBLOOM") == 0 && v.c_title == C_RED);
+  CHECK(strstr(v.l[0], "mini has stopped") != nullptr && strstr(v.l[1], "Darkbloom") != nullptr);
+  CHECK(strstr(v.l[3], "active for <2 min") != nullptr);           // 5 s + 70 s
+  CHECK(v.badge[0] == 0);                                          // no badge on the alert view itself
+  k.av_i = 2; make_view(f, k, c, 1000 + 70000, v); CHECK(v.c_title == C_AMBER && strstr(v.l[3], "13 min") != nullptr);
+  // ac larger than the list: the title says 2 OF 1000? it uses the true count
+  Feed big = with(A_CACHE "," A_SILENT, nullptr, 9, 1000); k.av_i = 0; make_view(big, k, c, 2000, v);
+  CHECK(strcmp(v.title, "ALERT 1 OF 9") == 0);
+}
 
-  // press: open the detail of the silent Mac and snooze
-  on_press(n, r1, t + 30000);
-  CHECK(!n.alert && n.topic == T_BL && n.detail && n.sub == 1 && n.snoozed);
-  // the same red during the snooze: no jump
-  on_feed(n, r1, t + 60000); CHECK(!n.alert);
-  on_feed(n, r1, t + 14 * 60000); CHECK(!n.alert);
-  // snooze over (15 min from the press): jumps again
-  on_feed(n, r1, t + 30000 + SNOOZE_MS); CHECK(n.alert);
+static void test_badge() {
+  Clock c; View v; Nav n;
+  Feed g = green(); g.at_ms = 1000; make_view(g, n, c, 2000, v); CHECK(v.badge[0] == 0);
+  Feed one = with(A_WAN, nullptr, 0, 1000); make_view(one, n, c, 2000, v);
+  CHECK(strcmp(v.badge, "! ALERT") == 0 && v.c_badge == C_AMBER);
+  Feed two = with(A_CACHE "," A_WAN, nullptr, 0, 1000); make_view(two, n, c, 2000, v);
+  CHECK(strcmp(v.badge, "! 2 ALERTS") == 0 && v.c_badge == C_RED);
+  Feed many = with(A_CACHE "," A_WAN, nullptr, 12, 1000); make_view(many, n, c, 2000, v); CHECK(strcmp(v.badge, "! 9+ ALERTS") == 0);
+  // on every page, including clock and the no-data pages
+  for (int topic = 0; topic < T_COUNT; topic++) {
+    Nav q; q.topic = topic; Feed f = with(A_CACHE, US_OK, 0, 1000); make_view(f, q, c, 2000, v);
+    CHECK(strcmp(v.badge, "! ALERT") == 0);
+    f.sd.ok = false; q.detail = false; make_view(f, q, c, 2000, v); CHECK(v.badge[0] != 0);
+  }
+  // no link: the stale list is not shown
+  make_view(two, n, c, 1000 + STALE_MS + 1, v); CHECK(v.badge[0] == 0);
+  // the badge pill fits the round screen at the top edge (centre y -204, 116 wide, 26 high)
+  CHECK(chord(-204, 26) >= 116);
+}
 
-  // turn dismisses and snoozes; the turn then acts from where the user was
-  n = Nav(); on_rotate(n, g, 1, t); on_feed(n, r1, t);
-  on_rotate(n, r1, 1, t + 1000);
-  CHECK(!n.alert && n.topic == T_SD);                      // was NW, one step on
-  on_feed(n, r1, t + 20000); CHECK(!n.alert);              // snoozed
+static void test_alert_model() {
+  Feed none = green();
+  Feed r1 = with(A_SILENT);
+  Feed r2 = with(A_SILENT "," A_CACHE);
+  Feed am = with(A_WAN);
+  uint32_t t = 10000;
 
-  // NEW reason during a snooze: immediate jump
-  Feed r2 = red("sd", "\"silent:mini\",\"array\"", "\"silent:mini\",\"array:STOPPED\"");
-  r2.bl.m[1].sl = true;
-  on_feed(n, r2, t + 40000); CHECK(n.alert && n.alert_topic == T_SD);
-  // ...and a reason that goes away and comes back is new again
-  n = Nav(); on_feed(n, r1, t); on_press(n, r1, t + 1);
-  Feed r3 = red("sd", "\"array\"", "\"array:STOPPED\"");
-  on_feed(n, r3, t + 100); CHECK(n.alert);                 // array is new
-  on_press(n, r3, t + 200);
-  on_feed(n, r1, t + 300);                                  // array gone, silent back
-  CHECK(n.alert);                                           // silent was dropped from the seen set, so it is new
+  // amber never jumps
+  { Nav n; on_feed(n, am, t); CHECK(!n.alert); }
 
-  // clear: back home if we were the ones who moved the screen
-  n = Nav(); on_rotate(n, g, 1, t); on_feed(n, r1, t); CHECK(n.alert);
-  on_feed(n, g, t + 20000); CHECK(!n.alert && n.topic == T_BL && !n.detail && !n.snoozed);
-  // clear after the user took over the screen: stay where they are
-  n = Nav(); on_feed(n, r1, t); on_rotate(n, r1, 1, t + 10);
-  on_rotate(n, r1, 1, t + 20);
-  int topic = n.topic;
-  on_feed(n, g, t + 30000); CHECK(n.topic == topic);
-  // but a press that opened the Mac detail from the alert is also user-driven
-  n = Nav(); on_feed(n, r1, t); on_press(n, r1, t + 5); CHECK(n.detail);
-  on_feed(n, g, t + 25000); CHECK(n.topic == T_BL);         // jumped flag was set by the jump; home is where it ends anyway
-  // after clear and a new red spell the snooze is gone
-  n = Nav(); on_feed(n, r1, t); on_rotate(n, r1, 1, t + 1); on_feed(n, g, t + 2); on_feed(n, r1, t + 3);
-  CHECK(n.alert);
-  // red_without_go does not alert
-  Feed nogo = r1; nogo.go[0] = 0; n = Nav(); on_feed(n, nogo, t); CHECK(!n.alert);
+  // a new red jumps from wherever Penn is, remembers the place, shows that alert
+  Nav n; on_rotate(n, none, 1, t); CHECK(n.topic == T_NW);
+  on_feed(n, r1, t); CHECK(n.alert && n.auto_open && n.av_i == 0 && strcmp(n.av_k, "silent:mini") == 0);
+  // seen = snoozed. Leaving brings him back to Network and nothing re-jumps
+  on_long_press(n, r1, t + 1000); CHECK(!n.alert && n.topic == T_NW);
+  on_feed(n, r1, t + 20000); CHECK(!n.alert);
+  on_feed(n, r1, t + SNOOZE_MS - 1000); CHECK(!n.alert);
+  // 15 minutes after he saw it: it jumps again
+  on_feed(n, r1, t + SNOOZE_MS); CHECK(n.alert);
+  on_long_press(n, r1, t + SNOOZE_MS + 5);
 
-  // idle timer never pulls an alert away
-  n = Nav(); on_feed(n, r1, t); on_tick(n, r1, t + 5 * 60000); CHECK(n.alert);
+  // a NEW red during a snooze jumps at once; the first one is not shown again
+  on_feed(n, r2, t + SNOOZE_MS + 100); CHECK(n.alert && strcmp(n.av_k, "cache") == 0);
 
-  // storage alert points at storage; press opens it
-  Feed rs = red("sd", "\"cache\"", "\"cache:97%\"");
-  n = Nav(); on_feed(n, rs, t); on_press(n, rs, t + 1); CHECK(n.topic == T_SD && n.detail && n.sub == 0);
+  // two reds: jumps once to the first unseen one; the other is reachable by turning and counted, no second jump
+  Feed two = with(A_CACHE "," A_USAGE, US_OK);
+  Nav m; on_feed(m, two, t); CHECK(m.alert && m.av_i == 0);
+  on_rotate(m, two, 1, t + 1); CHECK(m.av_i == 1);
+  on_long_press(m, two, t + 2); on_feed(m, two, t + 3); CHECK(!m.alert);
+
+  // leaving without ever stepping: the unseen second red stays quiet (no repeated nagging), badge keeps it
+  Nav q; on_feed(q, two, t); on_long_press(q, two, t + 1); on_feed(q, two, t + 2); CHECK(!q.alert);
+
+  // amber turning red jumps
+  Nav a; on_feed(a, with(R"({"k":"usage:5h","tp":"us","sv":"a","m":"x"})", US_OK), t); CHECK(!a.alert);
+  on_feed(a, with(A_USAGE, US_OK), t + 1000); CHECK(a.alert);
+
+  // an alert that clears and comes back is new again, even inside the old snooze window
+  Nav b; on_feed(b, r1, t); on_long_press(b, r1, t + 1);
+  on_feed(b, none, t + 5000); CHECK(!b.alert);
+  on_feed(b, r1, t + 6000); CHECK(b.alert);
+
+  // cleared while the view is open: it closes by itself; home if it opened by itself, back if Penn opened it
+  Nav c1; on_rotate(c1, none, 1, t); on_feed(c1, r1, t); CHECK(c1.alert);
+  on_feed(c1, none, t + 1000); CHECK(!c1.alert && c1.topic == T_BL && !c1.detail);
+  Nav c2; on_rotate(c2, none, 1, t); on_long_press(c2, with(A_WAN, nullptr, 0, t), t); // opened by hand on Network
+  CHECK(c2.alert && !c2.auto_open);
+  on_feed(c2, none, t + 1000); CHECK(!c2.alert && c2.topic == T_NW);
+  // the list shrinks under the view: follows the alert by key, else clamps
+  Nav d; on_feed(d, r2, t); on_rotate(d, r2, 1, t + 1); CHECK(d.av_i == 1);
+  Feed rest = with(A_CACHE); on_feed(d, rest, t + 2); CHECK(d.alert && d.av_i == 0 && strcmp(d.av_k, "cache") == 0);
+
+  // interplay with the idle timer: an automatic jump waits for Penn, a hand-opened view times out home
+  Nav e; on_feed(e, r1, t); on_tick(e, r1, t + 10 * 60000); CHECK(e.alert);
+  Nav h; h.started = true; h.last_knob = t; on_long_press(h, am, t + 1); // am is amber-only: live list opens by hand
+  h.last_knob = t; on_tick(h, am, t + HOME_AFTER_MS - 1); CHECK(h.alert);
+  on_tick(h, am, t + HOME_AFTER_MS); CHECK(!h.alert && h.topic == T_BL);
+
+  // the cause clears and the go-to press has already moved him: nothing happens to his position
+  Nav g; on_feed(g, r1, t); on_press(g, r1, t + 1); CHECK(!g.alert && g.topic == T_BL && g.detail && g.sub == 1);
+  on_feed(g, none, t + 2); CHECK(g.topic == T_BL && g.detail);
+
+  // usage switched off: the topic leaves the rotation and a parked position falls back home
+  Feed on = with(A_WAN, US_OK); Nav u; u.topic = T_EV;
+  on_rotate(u, on, 1, t); CHECK(u.topic == T_US);
+  on_rotate(u, on, 1, t); CHECK(u.topic == T_CLOCK);
+  Feed off = green(); Nav w; w.topic = T_EV; on_rotate(w, off, 1, t); CHECK(w.topic == T_CLOCK);
+  u.topic = T_US; on_tick(u, off, t); CHECK(u.topic == T_BL);
+}
+
+static void test_usage_views() {
+  Clock c; View v;
+  Feed f = with(A_USAGE, US_OK, 0, 1000);
+  Nav n; n.topic = T_US;
+  make_view(f, n, c, 2000, v);
+  CHECK(strcmp(v.title, "CLAUDE USAGE") == 0 && strcmp(v.big, "96%") == 0 && v.bar == 96 && v.c_big == C_RED);
+  CHECK(strstr(v.l[0], "resets in 80 min") != nullptr && strstr(v.l[1], "week 40%") != nullptr && strstr(v.l[1], "2 d 7 h") != nullptr);
+  CHECK(strstr(v.l[2], "full in 15 min") != nullptr);
+  n.detail = true; make_view(f, n, c, 2000, v);
+  CHECK(strcmp(v.big, "30%/h") == 0 && strstr(v.l[1], "Opus 70%") != nullptr && strstr(v.l[2], "Sonnet 20%") != nullptr);
+  // old data and not-yet-reported
+  Feed st = with("", R"({"ok":1,"st":1,"h5":{"p":10,"r":600}})", 0, 1000); n.detail = false; make_view(st, n, c, 2000, v);
+  CHECK(strstr(v.foot, "old data") != nullptr && v.c_big == C_AMBER);
+  Feed nd = with("", R"({"ok":0,"st":0})", 0, 1000); make_view(nd, n, c, 2000, v); CHECK(strcmp(v.big, "NO DATA") == 0);
+  // only a weekly number: no 5-hour window right now
+  Feed wk = with("", R"({"ok":1,"st":0,"wk":{"p":12,"r":90000}})", 0, 1000); make_view(wk, n, c, 2000, v);
+  CHECK(strcmp(v.big, "--") == 0 && strstr(v.l[1], "week 12%") != nullptr);
+  // dur() wording matches the server
+  char b[24];
+  dur(b, sizeof b, 30); CHECK(strcmp(b, "<2 min") == 0); dur(b, sizeof b, 4800); CHECK(strcmp(b, "80 min") == 0);
+  dur(b, sizeof b, 3 * 3600 + 1200); CHECK(strcmp(b, "3 h 20 min") == 0); dur(b, sizeof b, 3 * 86400); CHECK(strcmp(b, "3 d") == 0);
+  dur(b, sizeof b, 200000); CHECK(strcmp(b, "2 d 7 h") == 0);
+}
+
+static void test_wrap() {
+  char out[3][CAP_LINE + 1];
+  CHECK(wrap_text("Every internet link looks idle. The connection may be down.", CAP_LINE, out, 3) == 3);
+  CHECK(strcmp(out[0], "Every internet link looks") == 0 && strcmp(out[2], "down.") == 0);
+  CHECK(wrap_text("short", CAP_LINE, out, 3) == 1 && strcmp(out[0], "short") == 0);
+  // too long: cut with "..."; one huge word is split
+  int nl = wrap_text("aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm nnnn oooo pppp qqqq rrrr ssss tttt uuuu vvvv", CAP_LINE, out, 3);
+  CHECK(nl == 3 && strlen(out[2]) <= CAP_LINE && strstr(out[2], "...") != nullptr);
+  nl = wrap_text("0123456789012345678901234567890123456789", CAP_LINE, out, 3); CHECK(nl == 2 && strlen(out[0]) == CAP_LINE);
 }
 
 static size_t width_est(const char *s, int px_per_char) { return strlen(s) * px_per_char; }
@@ -245,7 +381,29 @@ static void test_views() {
       }
     }
   }
-  { Nav n; n.alert = true; n.alert_topic = T_BL; View v; make_view(f, n, c, now, v); check_fit(v, "alert"); CHECK(strcmp(v.title, "ALERT") == 0); }
+  // the alert view with the longest messages the server can send (90 characters), every position in a full list
+  {
+    const char *msg[6] = {
+      "Cache pool is 99% full and the array is 99% full. Free some space on both right now!",
+      "studio-mac-m0-long has stopped serving Darkbloom (no activity for over 30 min) okay.",
+      "Every internet link looks idle. The connection may be down. Check the router power.",
+      "Claude weekly usage is 100%. Resets in 6 d 23 h. Slow down or the limit will block you.",
+      "Tonight's charge will fall short of the target. Raise the limit or plug in earlier.",
+      "Unraid has 12 unread alerts and 13 unread warnings that need a look soon, please do."};
+    Feed al = f; al.nal = 6; al.ac = 12;
+    for (int i = 0; i < 6; i++) { al.al[i] = Alert(); snprintf(al.al[i].k, sizeof al.al[i].k, "k%d", i); strcpy(al.al[i].tp, i == 3 ? "us" : i == 4 ? "ev" : "sd"); al.al[i].sv = i % 2 ? 'a' : 'r'; snprintf(al.al[i].m, sizeof al.al[i].m, "%.90s", msg[i]); al.al[i].a = 9 * 86400; }
+    for (int i = 0; i < 6; i++) { Nav n; n.alert = true; n.av_i = i; View v; make_view(al, n, c, now, v); check_fit(v, "alert view"); CHECK(strncmp(v.title, "ALERT", 5) == 0); CHECK(v.l[0][0] != 0); }
+    // normal pages with the badge present still fit (the badge is a separate widget at the top edge)
+    for (int topic = 0; topic < T_COUNT; topic++) { Nav n; n.topic = topic; View v; make_view(al, n, c, now, v); check_fit(v, "badge page"); CHECK(v.badge[0] != 0); }
+  }
+  // the usage pages, full of data
+  {
+    Feed u = with(A_USAGE, R"({"ok":1,"st":1,"h5":{"p":100,"r":17999},"wk":{"p":100,"r":604799},"m":[{"n":"Sonnet4.5xx","p":100,"r":604799},{"n":"Opus","p":99,"r":1},{"n":"Haiku","p":1},{"n":"Fable","p":2,"r":99999}],"bp":100,"lm":0})", 0, 1000);
+    for (int det = 0; det < 2; det++) for (int pg = 0; pg < (det ? detail_count(u, T_US) : 1); pg++) {
+      Nav n; n.topic = T_US; n.detail = det; n.sub = pg; View v; make_view(u, n, c, 2000, v); check_fit(v, "usage"); CHECK(v.title[0]);
+    }
+    CHECK(detail_count(u, T_US) == 2);
+  }
 
   // ring colours
   Nav n; View v;
@@ -291,7 +449,7 @@ static void test_brightness() {
 }
 
 int main() {
-  test_parse(); test_nav(); test_autoswitch(); test_views(); test_brightness();
+  test_parse(); test_alert_parse(); test_nav(); test_gesture(); test_view_stepping(); test_badge(); test_alert_model(); test_usage_views(); test_wrap(); test_views(); test_brightness();
   printf("%d checks, %d failed\n", checks, fails);
   return fails ? 1 : 0;
 }

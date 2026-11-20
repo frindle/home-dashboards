@@ -7,7 +7,7 @@
 namespace panel {
 
 struct Widgets {
-  lv_obj_t *title, *big, *bar, *l[4], *foot, *ring;
+  lv_obj_t *title, *big, *bar, *l[4], *foot, *ring, *badge;
 };
 
 inline void set_text(lv_obj_t *o, const char *s, uint32_t color) {
@@ -28,6 +28,15 @@ inline void apply(const Widgets &w, const View &v) {
       lv_obj_clear_flag(w.bar, LV_OBJ_FLAG_HIDDEN);
       lv_bar_set_value(w.bar, v.bar, LV_ANIM_OFF);
       lv_obj_set_style_bg_color(w.bar, lv_color_hex(v.c_bar), LV_PART_INDICATOR);
+    }
+  }
+  if (w.badge) {
+    if (!v.badge[0]) lv_obj_add_flag(w.badge, LV_OBJ_FLAG_HIDDEN);
+    else {
+      lv_obj_clear_flag(w.badge, LV_OBJ_FLAG_HIDDEN);
+      if (strcmp(lv_label_get_text(w.badge), v.badge) != 0) lv_label_set_text(w.badge, v.badge);
+      lv_obj_set_style_bg_color(w.badge, lv_color_hex(v.c_badge), 0);
+      lv_obj_set_style_text_color(w.badge, lv_color_hex(v.c_badge_text), 0);
     }
   }
   if (w.ring) lv_obj_set_style_border_color(w.ring, lv_color_hex(v.ring), 0);

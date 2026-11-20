@@ -17,6 +17,7 @@ namespace panel {
 
 // Same limits as MAX_MACS / MAX_LINKS / MAX_DISKS in lib/panelFeed.ts. More Macs than this are ignored.
 constexpr int MAX_MACS = 4, MAX_LINKS = 4, MAX_DISKS = 16, MAX_RR = 4, MAX_WHY = 3;
+constexpr int MAX_AL = 6, MAX_US_MODELS = 4;   // MAX_ALERTS / MAX_MODELS in lib/panelAlerts.ts, lib/panelUsage.ts
 constexpr int FEED_VERSION = 1;
 
 inline void cp(char *dst, size_t n, const char *src) {
@@ -40,6 +41,12 @@ struct Disk {
   char n[10] = "";
   char r = 'd';
   int u = -1, sp = -1, t = -1;
+};
+
+// One priority alert from the feed's "al" list (already ordered by priority). `tp` is the topic: bl nw sd ev us.
+struct Alert {
+  char k[24] = "", tp[3] = "", sv = 'a', m[92] = "";   // sv: 'r' red, 'a' amber
+  uint32_t a = 0;                                      // seconds active when the feed was built
 };
 
 struct Feed {
@@ -66,6 +73,18 @@ struct Feed {
     int plug = -1, soc = -1, lim = -1, amps = -1, tgt = -1, sf = 0, wk = -1;
     float kwh = -1, h = -1;
   } ev;
+  // Claude usage. `present` is false when the dashboard has the feature off (the key is absent): no page, no topic.
+  struct Us {
+    bool present = false, ok = false, st = false;
+    struct W { bool has = false; int p = 0, r = -1; } h5, wk;   // percent used, seconds to reset (-1 unknown)
+    struct M { char n[12] = ""; int p = 0, r = -1; } m[MAX_US_MODELS];
+    int nm = 0, lm = -1;     // lm: seconds until the 5-hour limit at the current pace, -1 = not reached before reset
+    float bp = -1;           // burn rate, percent of the 5-hour limit per hour
+  } us;
+
+  Alert al[MAX_AL];
+  int nal = 0;               // alerts in the list
+  int ac = 0;                // true count, >= nal when the server cut the list
 };
 
 namespace detail {
@@ -166,6 +185,42 @@ inline bool parse_feed(JsonObjectConst root, Feed &out, uint32_t now_ms) {
     f.ev.tgt = geti(ev["tgt"]); f.ev.sf = geti(ev["sf"], 0); f.ev.wk = geti(ev["wk"]);
     f.ev.kwh = getf(ev["kwh"]); f.ev.h = getf(ev["h"]);
   }
+
+  // ---- Claude usage (absent = feature off)
+  JsonObjectConst us = root["us"];
+  f.us.present = !us.isNull();
+  f.us.ok = f.us.present && ok_of(us);
+  f.us.st = us["st"].as<int>() == 1;
+  if (f.us.ok) {
+    auto win = [](JsonObjectConst w, Feed::Us::W &o) {
+      o.has = !w.isNull() && w["p"].is<int>();
+      if (o.has) { o.p = w["p"].as<int>(); o.r = geti(w["r"]); }
+    };
+    win(us["h5"], f.us.h5); win(us["wk"], f.us.wk);
+    for (JsonObjectConst o : us["m"].as<JsonArrayConst>()) {
+      if (f.us.nm >= MAX_US_MODELS) break;
+      Feed::Us::M &m = f.us.m[f.us.nm++];
+      cp(m.n, sizeof m.n, o["n"] | "model");
+      m.p = geti(o["p"], 0); m.r = geti(o["r"]);
+    }
+    f.us.bp = getf(us["bp"]); f.us.lm = geti(us["lm"]);
+  }
+
+  // ---- Alerts
+  for (JsonObjectConst o : root["al"].as<JsonArrayConst>()) {
+    if (f.nal >= MAX_AL) break;
+    Alert &a = f.al[f.nal];
+    cp(a.k, sizeof a.k, o["k"] | "");
+    if (!a.k[0]) continue;
+    cp(a.tp, sizeof a.tp, o["tp"] | "");
+    a.sv = strcmp(o["sv"] | "a", "r") == 0 ? 'r' : 'a';
+    cp(a.m, sizeof a.m, o["m"] | "");
+    int s = geti(o["a"], 0);
+    a.a = s > 0 ? (uint32_t) s : 0;
+    f.nal++;
+  }
+  f.ac = geti(root["ac"], 0);
+  if (f.ac < f.nal) f.ac = f.nal;
 
   out = f;
   return true;

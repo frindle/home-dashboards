@@ -129,9 +129,19 @@ binary_sensor:
     pin: {pcf8574: pcf, number: 5, mode: {input: true}, inverted: true}
     filters:
       - delayed_on: 30ms
-    on_press:
-      - lambda: panel::on_press(panel::g_nav, panel::g_feed, millis());
-      - script.execute: refresh_ui
+    # Short press: detail, or "open this alert's topic" inside the alert view. Long press (hold about a second):
+    # open the alert view from any screen, or leave it. Both act on release.
+    on_click:
+      - min_length: 40ms
+        max_length: 600ms
+        then:
+          - lambda: panel::on_press(panel::g_nav, panel::g_feed, millis());
+          - script.execute: refresh_ui
+      - min_length: 800ms
+        max_length: 10s
+        then:
+          - lambda: panel::on_long_press(panel::g_nav, panel::g_feed, millis());
+          - script.execute: refresh_ui
 
 sensor:
   - platform: rotary_encoder
@@ -172,7 +182,7 @@ script:
           }
           uint32_t now = millis();
           panel::make_view(panel::g_feed, panel::g_nav, c, now, v);
-          panel::Widgets w{id(w_title), id(w_big), id(w_bar), {id(w_l0), id(w_l1), id(w_l2), id(w_l3)}, id(w_foot), id(ring)};
+          panel::Widgets w{id(w_title), id(w_big), id(w_bar), {id(w_l0), id(w_l1), id(w_l2), id(w_l3)}, id(w_foot), id(ring), id(w_badge)};
           panel::apply(w, v);
           int b = panel::brightness(panel::g_feed, panel::g_nav, now);
           if (b != id(last_br)) {
@@ -338,4 +348,21 @@ lvgl:
         - label: {id: w_l1, align: CENTER, y: 17, width: 390, text_align: CENTER, long_mode: CLIP, text: "", text_font: montserrat_20, text_color: 0xA0A6B0}
         - label: {id: w_l2, align: CENTER, y: 59, width: 390, text_align: CENTER, long_mode: CLIP, text: "", text_font: montserrat_20, text_color: 0xA0A6B0}
         - label: {id: w_l3, align: CENTER, y: 101, width: 390, text_align: CENTER, long_mode: CLIP, text: "", text_font: montserrat_20, text_color: 0xA0A6B0}
+        # Alert badge: a pill at the top edge, above the title, so it never covers the page data.
+        - label:
+            id: w_badge
+            align: CENTER
+            y: -204
+            width: 116
+            height: 26
+            hidden: true
+            text_align: CENTER
+            long_mode: CLIP
+            text: ""
+            text_font: montserrat_16
+            text_color: 0xFFFFFF
+            bg_color: 0xFF3B30
+            bg_opa: COVER
+            radius: 13
+            pad_top: 3
         - label: {id: w_foot, align: CENTER, y: 160, width: 320, text_align: CENTER, long_mode: CLIP, text: "", text_font: montserrat_16, text_color: 0xA0A6B0}

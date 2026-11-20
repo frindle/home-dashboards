@@ -20,6 +20,8 @@ struct View {
   int bar = -1;                // 0..100, or -1 for no bar
   uint32_t c_bar = C_BLUE;
   uint32_t ring = C_RING_OK;
+  char badge[12] = "";         // alert badge at the top of the screen ("! 3 ALERTS"), empty = hidden
+  uint32_t c_badge = C_RED, c_badge_text = C_WHITE;
 };
 
 struct Clock {
@@ -54,6 +56,22 @@ inline void since(char *b, size_t n, uint32_t secs) {
   else snprintf(b, n, "%u h", (unsigned) (secs / 3600));
 }
 
+// Same wording as durText() in lib/panelAlerts.ts: "under 2 min", "45 min", "2 h 10 min", "3 d 4 h".
+inline void dur(char *b, size_t n, uint32_t secs) {
+  if (secs < 90) { snprintf(b, n, "<2 min"); return; }
+  uint32_t min = (secs + 30) / 60;
+  if (min < 120) { snprintf(b, n, "%u min", (unsigned) min); return; }
+  uint32_t h = min / 60;
+  if (h < 48) { if (min % 60) snprintf(b, n, "%u h %u min", (unsigned) h, (unsigned) (min % 60)); else snprintf(b, n, "%u h", (unsigned) h); return; }
+  if (h % 24) snprintf(b, n, "%u d %u h", (unsigned) (h / 24), (unsigned) (h % 24)); else snprintf(b, n, "%u d", (unsigned) (h / 24));
+}
+
+// 2 red, 1 amber, 0 none for one alert key in the feed's list.
+inline int alert_sev(const Feed &f, const char *k) {
+  for (int i = 0; i < f.nal; i++) if (strcmp(f.al[i].k, k) == 0) return f.al[i].sv == 'r' ? 2 : 1;
+  return 0;
+}
+
 inline bool starts(const char *s, const char *p) { return strncmp(s, p, strlen(p)) == 0; }
 
 // 2 red, 1 amber, 0 none: does a red key (rr) or a displayed reason (why) start with one of these prefixes?
@@ -75,6 +93,7 @@ inline const char *topic_title(int t) {
     case T_NW: return "NETWORK";
     case T_SD: return "STORAGE";
     case T_EV: return "EV TONIGHT";
+    case T_US: return "CLAUDE USAGE";
     default: return "CLOCK";
   }
 }
@@ -304,6 +323,72 @@ inline void ev_detail(const Feed &f, View &v) {
   if (e.st) old_note(v, "old data   press: back");
 }
 
+// ---- Claude usage ----
+inline void us_overview(const Feed &f, View &v) {
+  const auto &u = f.us;
+  snprintf(v.title, sizeof v.title, "CLAUDE USAGE");
+  if (u.h5.has) {
+    snprintf(v.big, sizeof v.big, "%d%%", u.h5.p);
+    v.bar = u.h5.p > 100 ? 100 : u.h5.p;
+    int t = alert_sev(f, "usage:5h");
+    v.c_big = tint_color(t, C_WHITE);
+    v.c_bar = t == 2 ? C_RED : t == 1 ? C_AMBER : C_BLUE;
+    char d[16];
+    if (u.h5.r >= 0) { dur(d, sizeof d, (uint32_t) u.h5.r); snprintf(v.l[0], sizeof v.l[0], "5 h window, resets in %s", d); }
+    else snprintf(v.l[0], sizeof v.l[0], "5 h window used");
+  } else {
+    snprintf(v.big, sizeof v.big, "--");
+    snprintf(v.l[0], sizeof v.l[0], "5 h window: no session now");
+  }
+  if (u.wk.has) {
+    char d[16] = "";
+    if (u.wk.r >= 0) dur(d, sizeof d, (uint32_t) u.wk.r);
+    if (d[0]) snprintf(v.l[1], sizeof v.l[1], "week %d%%, resets in %s", u.wk.p, d);
+    else snprintf(v.l[1], sizeof v.l[1], "week %d%% used", u.wk.p);
+    int t = alert_sev(f, "usage:wk");
+    v.c_l[1] = tint_color(t, C_GREY);
+  }
+  if (u.lm >= 0) {
+    char d[16]; dur(d, sizeof d, (uint32_t) u.lm);
+    snprintf(v.l[2], sizeof v.l[2], "at this pace: full in %s", d);
+    v.c_l[2] = C_AMBER;
+  } else if (u.bp >= 0) {
+    snprintf(v.l[2], sizeof v.l[2], "pace %.0f%% per hour, fine", u.bp);
+  }
+  snprintf(v.foot, sizeof v.foot, "press: models and pace");
+  if (u.st) old_note(v, "old data");
+}
+
+inline void us_detail(const Feed &f, int page, View &v) {
+  const auto &u = f.us;
+  int pages = detail_count(f, T_US);
+  if (page < 0 || page >= pages) return;
+  snprintf(v.title, sizeof v.title, "CLAUDE LIMITS");
+  if (page == 0) {
+    if (u.bp >= 0) snprintf(v.big, sizeof v.big, "%.0f%%/h", u.bp); else snprintf(v.big, sizeof v.big, "--");
+    if (u.bp < 0) snprintf(v.l[0], sizeof v.l[0], "burn rate: too early to tell");
+    else if (u.lm >= 0) { char d[16]; dur(d, sizeof d, (uint32_t) u.lm); snprintf(v.l[0], sizeof v.l[0], "5 h limit in %s", d); v.c_l[0] = C_AMBER; v.c_big = C_AMBER; }
+    else snprintf(v.l[0], sizeof v.l[0], "5 h burn rate, fine");
+  } else {
+    snprintf(v.big, sizeof v.big, "MODELS");
+  }
+  if (u.nm == 0 && page == 0) { snprintf(v.l[1], sizeof v.l[1], "no per-model limits sent"); }
+  for (int r = 0; r < MODELS_PER_PAGE; r++) {
+    int k = page * MODELS_PER_PAGE + r;
+    if (k >= u.nm) break;
+    const auto &m = u.m[k];
+    char d[16] = "";
+    if (m.r >= 0) dur(d, sizeof d, (uint32_t) m.r);
+    char key[32]; snprintf(key, sizeof key, "usage:%s", m.n);
+    for (char *c = key + 6; *c; c++) if (*c >= 'A' && *c <= 'Z') *c += 32;
+    if (d[0]) snprintf(v.l[1 + r], sizeof v.l[1 + r], "%.9s %d%%, %s", m.n, m.p, d);
+    else snprintf(v.l[1 + r], sizeof v.l[1 + r], "%.9s %d%% of week", m.n, m.p);
+    v.c_l[1 + r] = tint_color(alert_sev(f, key), C_WHITE);
+  }
+  snprintf(v.foot, sizeof v.foot, "%d of %d   press: back", page + 1, pages);
+  if (u.st) old_note(v, "old data   press: back");
+}
+
 // ---- Clock ----
 inline void clock_view(const Feed &f, const Clock &c, uint32_t now, View &v) {
   snprintf(v.title, sizeof v.title, "CLOCK");
@@ -318,34 +403,86 @@ inline void clock_view(const Feed &f, const Clock &c, uint32_t now, View &v) {
   }
 }
 
-// ---- Alert ----
-// why entries look like "silent:studio-m4", "array:STOPPED", "parity:err", "cache:92%", "unraid:2!".
-inline void reason_words(const char *why, char *head, size_t hn, char *arg, size_t an) {
-  const char *colon = strchr(why, ':');
-  char key[16] = "";
-  if (colon) { size_t k = (size_t) (colon - why); if (k >= sizeof key) k = sizeof key - 1; memcpy(key, why, k); key[k] = 0; snprintf(arg, an, "%s", colon + 1); }
-  else { snprintf(key, sizeof key, "%s", why); arg[0] = 0; }
-  const char *h = strcmp(key, "silent") == 0 ? "MAC SILENT" : strcmp(key, "array") == 0 ? "ARRAY" : strcmp(key, "parity") == 0 ? "PARITY"
-                : strcmp(key, "cache") == 0 ? "CACHE FULL" : strcmp(key, "unraid") == 0 ? "UNRAID" : key;
-  snprintf(head, hn, "%s", h);
+// ---- Alerts ----
+inline const char *alert_topic_name(const char *tp) {
+  if (strcmp(tp, "sd") == 0) return "STORAGE";
+  if (strcmp(tp, "bl") == 0) return "DARKBLOOM";
+  if (strcmp(tp, "nw") == 0) return "NETWORK";
+  if (strcmp(tp, "us") == 0) return "CLAUDE";
+  if (strcmp(tp, "ev") == 0) return "EV CHARGE";
+  return "ALERT";
 }
 
-inline void alert_view(const Feed &f, View &v) {
-  snprintf(v.title, sizeof v.title, "ALERT");
-  v.c_title = C_RED;
-  char arg[24] = "";
-  reason_words(f.nwhy > 0 ? f.why[0] : "red", v.big, sizeof v.big, arg, sizeof arg);
-  v.c_big = C_RED;
-  if (arg[0]) snprintf(v.l[0], sizeof v.l[0], "%s", arg);
-  v.c_l[0] = C_WHITE;
-  for (int i = 1; i < f.nwhy && i < 3; i++) {
-    char h[16], a[24];
-    reason_words(f.why[i], h, sizeof h, a, sizeof a);
-    snprintf(v.l[i], sizeof v.l[i], "%s %s", h, a);
-    v.c_l[i] = C_GREY;
+// Greedy word wrap into at most `maxl` lines of `width` characters; a word longer than a line is split; text that does not
+// fit ends in "...". Returns the number of lines used.
+inline int wrap_text(const char *s, int width, char (*out)[CAP_LINE + 1], int maxl) {
+  int line = 0, col = 0;
+  out[0][0] = 0;
+  const char *p = s;
+  while (*p) {
+    while (*p == ' ') p++;
+    if (!*p) break;
+    const char *e = p;
+    while (*e && *e != ' ') e++;
+    int wl = (int) (e - p);
+    if (col > 0 && col + 1 + wl > width) {          // start a new line
+      if (line + 1 >= maxl) { goto overflow; }
+      line++; col = 0; out[line][0] = 0;
+    }
+    while (wl > 0) {                                // append (splitting a very long word)
+      int room = width - col - (col > 0 ? 1 : 0);
+      if (room <= 0) {
+        if (line + 1 >= maxl) goto overflow;
+        line++; col = 0; out[line][0] = 0; continue;
+      }
+      int take = wl < room ? wl : room;
+      if (col > 0) out[line][col++] = ' ';
+      memcpy(out[line] + col, p, (size_t) take);
+      col += take; out[line][col] = 0;
+      p += take; wl -= take;
+    }
+    p = e;
   }
-  snprintf(v.foot, sizeof v.foot, "press: details   turn: snooze");
-  v.ring = C_RED;
+  return line + 1;
+overflow:
+  {
+    int L = (int) strlen(out[line]);
+    if (L > width - 3) L = width - 3;
+    memcpy(out[line] + L, "...", 4);
+  }
+  return line + 1;
+}
+
+// The alert view: topic in big letters, the whole message, how long it has been active. Turn steps through the list.
+inline void alert_view(const Feed &f, const Nav &n, uint32_t now, View &v) {
+  int i = n.av_i < 0 ? 0 : n.av_i >= f.nal ? f.nal - 1 : n.av_i;
+  const Alert &a = f.al[i];
+  uint32_t col = a.sv == 'r' ? C_RED : C_AMBER;
+  if (f.nal > 1) snprintf(v.title, sizeof v.title, "ALERT %d OF %d", i + 1, f.ac > f.nal ? f.ac : f.nal);
+  else snprintf(v.title, sizeof v.title, "ALERT");
+  v.c_title = col;
+  snprintf(v.big, sizeof v.big, "%s", alert_topic_name(a.tp));
+  v.c_big = col;
+  char lines[3][CAP_LINE + 1];
+  int nl = wrap_text(a.m, CAP_LINE, lines, 3);
+  for (int k = 0; k < nl; k++) { snprintf(v.l[k], sizeof v.l[k], "%s", lines[k]); v.c_l[k] = C_WHITE; }
+  char d[16]; dur(d, sizeof d, a.a + (now - f.at_ms) / 1000);
+  snprintf(v.l[3], sizeof v.l[3], "active for %s", d);
+  v.c_l[3] = C_GREY;
+  snprintf(v.foot, sizeof v.foot, "%s", f.nal > 1 ? "turn next  press go  hold back" : "press go       hold back");
+  v.ring = col;
+}
+
+// Badge shown on every other screen while alerts exist.
+inline void badge_for(const Feed &f, View &v) {
+  bool red = false;
+  for (int i = 0; i < f.nal; i++) if (f.al[i].sv == 'r') red = true;
+  int cnt = f.ac > f.nal ? f.ac : f.nal;
+  if (cnt > 9) snprintf(v.badge, sizeof v.badge, "! 9+ ALERTS");
+  else if (cnt > 1) snprintf(v.badge, sizeof v.badge, "! %d ALERTS", cnt);
+  else snprintf(v.badge, sizeof v.badge, "! ALERT");
+  v.c_badge = red ? C_RED : C_AMBER;
+  v.c_badge_text = red ? C_WHITE : 0x000000;
 }
 
 // ---- entry point ----
@@ -355,32 +492,39 @@ inline void make_view(const Feed &f, const Nav &n, const Clock &c, uint32_t now,
   v = View();
   ring_for(f, now, v);
   bool up = link_up(f, now);
-  int topic = n.alert ? n.alert_topic : n.topic;
-  if (n.alert && up) {
-    alert_view(f, v);
-  } else if (topic == T_CLOCK && !n.alert) {
-    clock_view(f, c, now, v);
-  } else if (!up) {
-    no_link(f, now, topic_title(topic), v);
+  int topic = n.topic;
+  if (n.alert && up && f.nal > 0) {
+    alert_view(f, n, now, v);
   } else {
-    bool det = n.detail && !n.alert;
-    switch (topic) {
-      case T_BL:
-        if (!f.bl.ok) no_data("DARKBLOOM", "ledger not responding", v);
-        else if (det) bl_detail(f, n.sub, v); else bl_overview(f, v);
-        break;
-      case T_NW:
-        if (!f.nw.ok) no_data("NETWORK", "no network numbers", v);
-        else if (det) nw_detail(f, n.sub, v); else nw_overview(f, v);
-        break;
-      case T_SD:
-        if (!f.sd.ok) no_data("STORAGE", "no storage numbers", v);
-        else if (det) sd_detail(f, n.sub, v); else sd_overview(f, v);
-        break;
-      case T_EV:
-        if (!f.ev.ok) no_data("EV TONIGHT", "no charge plan", v);
-        else if (det) ev_detail(f, v); else ev_overview(f, v);
-        break;
+    if (alerts_live(f, now)) badge_for(f, v);
+    if (topic == T_CLOCK) {
+      clock_view(f, c, now, v);
+    } else if (!up) {
+      no_link(f, now, topic_title(topic), v);
+    } else {
+      bool det = n.detail;
+      switch (topic) {
+        case T_BL:
+          if (!f.bl.ok) no_data("DARKBLOOM", "ledger not responding", v);
+          else if (det) bl_detail(f, n.sub, v); else bl_overview(f, v);
+          break;
+        case T_NW:
+          if (!f.nw.ok) no_data("NETWORK", "no network numbers", v);
+          else if (det) nw_detail(f, n.sub, v); else nw_overview(f, v);
+          break;
+        case T_SD:
+          if (!f.sd.ok) no_data("STORAGE", "no storage numbers", v);
+          else if (det) sd_detail(f, n.sub, v); else sd_overview(f, v);
+          break;
+        case T_EV:
+          if (!f.ev.ok) no_data("EV TONIGHT", "no charge plan", v);
+          else if (det) ev_detail(f, v); else ev_overview(f, v);
+          break;
+        case T_US:
+          if (!f.us.ok) no_data("CLAUDE USAGE", "waiting for the reporter", v);
+          else if (det) us_detail(f, n.sub, v); else us_overview(f, v);
+          break;
+      }
     }
   }
   clip(v.title, CAP_TITLE); clip(v.big, CAP_BIG); clip(v.foot, CAP_FOOT);
