@@ -59,6 +59,7 @@ static void write_ppm(const std::string &p) {
 int main(int argc, char **argv) {
   if (argc < 5) { fprintf(stderr, "usage: preview manifest.tsv feeds_dir out_dir fonts_dir\n"); return 2; }
   std::string feeds = argv[2], out = argv[3], fdir = argv[4];
+  setenv("TZ", "UTC", 1); tzset();
   lv_init();
   lv_tick_set_cb([]() -> uint32_t { static uint32_t t = 0; return t += 20; });
   disp = lv_display_create(480, 480);

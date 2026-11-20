@@ -407,11 +407,6 @@ inline void nw_overview(B &b, const Feed &f, bool old) {
   b.text("MBPS · LIVE", F15, C_LABEL, 240, s.y[ft] + BASE15, 0, 380, 2);
 }
 
-inline void pct_hero_screen(B &b, uint8_t ic, const char *title, int pct, int sev, bool old, const char *sub,
-                            float *top_after = nullptr) {
-  (void) b; (void) ic; (void) title; (void) pct; (void) sev; (void) old; (void) sub; (void) top_after;
-}
-
 // Storage overview
 inline void sd_overview(B &b, const Feed &f, bool old) {
   const auto &d = f.sd;

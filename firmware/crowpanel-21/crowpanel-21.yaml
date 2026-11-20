@@ -1,12 +1,16 @@
 # Status panel for the Elecrow CrowPanel Rotary 2.1" (ESP32-S3R8). See README.md.
 # Hardware blocks (psram, i2c, pcf8574, st7701s init, cst816, encoder) are from Elecrow's ESPHome lesson 05.
 # The screens are drawn from firmware/crowpanel-21/panel_*.h: panel_feed.h (parser), panel_nav.h (knob and red
-# auto-switch), panel_view.h (text per screen), panel_ui.h (LVGL). test/panel_test.cpp runs them on a normal machine.
+# auto-switch, snooze), panel_icons.h, panel_scene.h (one screen as items), panel_ui.h (draws them on LVGL objects). test/panel_test.cpp runs them on a normal machine.
 substitutions:
   # Knob feel. Counts per step: raise it if one click skips a screen. Direction: 1 clockwise = next, -1 reverses it.
   knob_counts_per_step: "1"
   knob_direction: "1"
   poll_every: 10s
+  # Local time zone for the clock (POSIX TZ string; the default is US Pacific). Shown on the Clock screen and in reset times.
+  timezone: "PST8PDT,M3.2.0,M11.1.0"
+  # Shown on the boot and updating screens ("v1.4.0"). Bump it when you release.
+  fw_version: "1.4.0"
 
 esphome:
   name: crowpanel-21
@@ -14,7 +18,8 @@ esphome:
   includes:
     - panel_feed.h
     - panel_nav.h
-    - panel_view.h
+    - panel_icons.h
+    - panel_scene.h
     - panel_ui.h
     - panel_helpers.h
   platformio_options:
@@ -57,11 +62,24 @@ logger:
 ota:
   - platform: esphome
     password: !secret ota_password
+    on_begin:
+      - lambda: |-
+          panel::g_sys.mode = panel::SYS_OTA; panel::g_sys.pct = 0;
+      - script.execute: refresh_ui
+    on_progress:
+      - lambda: |-
+          panel::g_sys.pct = (int) x;
+      - script.execute: refresh_ui
+    on_error:
+      - lambda: |-
+          panel::g_sys.mode = panel::SYS_NONE;
+      - script.execute: refresh_ui
 
 # Wi-Fi is NOT in the firmware. First boot (or after the saved network fails): connect a computer to USB and use
 # the improv Wi-Fi setup in the ESPHome web installer, or join the "crowpanel-21 setup" hotspot and use the captive
 # page. The network is then saved on the device and survives OTA updates.
 wifi:
+  id: wifi_id
   ap:
     ssid: "crowpanel-21 setup"
     password: !secret ap_password
@@ -73,7 +91,7 @@ improv_serial:
 time:
   - platform: sntp
     id: sntp_time
-    timezone: America/Los_Angeles
+    timezone: ${timezone}
 
 http_request:
   id: http
@@ -115,6 +133,13 @@ light:
     default_transition_length: 0s
     restore_mode: ALWAYS_ON
 
+font:
+  # Montserrat, four sizes. The 96 px set holds only what a hero value needs (digits, % $ . : and the dashes).
+  - {file: "fonts/Montserrat-SemiBold.ttf", id: f96, size: 96, bpp: 4, glyphs: "0123456789%$.:–— -+"}
+  - {file: "fonts/Montserrat-SemiBold.ttf", id: f40, size: 40, bpp: 4, glyphs: &glyphs " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~·–—→’"}
+  - {file: "fonts/Montserrat-Medium.ttf", id: f22, size: 22, bpp: 4, glyphs: *glyphs}
+  - {file: "fonts/Montserrat-SemiBold.ttf", id: f15, size: 15, bpp: 4, glyphs: *glyphs}
+
 globals:
   - {id: last_enc, type: int, restore_value: false, initial_value: "0"}
   - {id: enc_ready, type: bool, restore_value: false, initial_value: "false"}
@@ -129,7 +154,7 @@ binary_sensor:
     pin: {pcf8574: pcf, number: 5, mode: {input: true}, inverted: true}
     filters:
       - delayed_on: 30ms
-    # Short press: detail, or "open this alert's topic" inside the alert view. Long press (hold about a second):
+    # Short press: detail, or "open this alert's topic" inside the alert view. Long press (hold 600 ms):
     # open the alert view from any screen, or leave it. Both act on release.
     on_click:
       - min_length: 40ms
@@ -137,7 +162,7 @@ binary_sensor:
         then:
           - lambda: panel::on_press(panel::g_nav, panel::g_feed, millis());
           - script.execute: refresh_ui
-      - min_length: 800ms
+      - min_length: 600ms
         max_length: 10s
         then:
           - lambda: panel::on_long_press(panel::g_nav, panel::g_feed, millis());
@@ -172,19 +197,22 @@ script:
     mode: restart
     then:
       - lambda: |-
-          static panel::View v;
           panel::Clock c;
           auto t = id(sntp_time).now();
-          if (t.is_valid()) {
-            c.valid = true;
-            snprintf(c.time, sizeof c.time, "%s", t.strftime("%H:%M").c_str());
-            snprintf(c.date, sizeof c.date, "%s", t.strftime("%a %d %b").c_str());
-          }
+          if (t.is_valid()) { c.valid = true; c.t = t.timestamp; }
           uint32_t now = millis();
-          panel::make_view(panel::g_feed, panel::g_nav, c, now, v);
-          panel::Widgets w{id(w_title), id(w_big), id(w_bar), {id(w_l0), id(w_l1), id(w_l2), id(w_l3)}, id(w_foot), id(ring), id(w_badge)};
-          panel::apply(w, v);
           int b = panel::brightness(panel::g_feed, panel::g_nav, now);
+          if (panel::g_sys.mode != panel::SYS_NONE) {
+            snprintf(panel::g_sys.version, sizeof panel::g_sys.version, "%s", "${fw_version}");
+            snprintf(panel::g_sys.ap, sizeof panel::g_sys.ap, "%s", "crowpanel-21 setup");
+            panel::make_system(panel::g_sys, panel::g_scene);
+          } else {
+            panel::make_scene(panel::g_feed, panel::g_nav, c, now, b, panel::g_scene);
+          }
+          static const lv_font_t *fonts[4];
+          fonts[0] = id(f96)->get_lv_font(); fonts[1] = id(f40)->get_lv_font();
+          fonts[2] = id(f22)->get_lv_font(); fonts[3] = id(f15)->get_lv_font();
+          panel::apply(panel::g_ui, panel::g_scene, fonts);
           if (b != id(last_br)) {
             id(last_br) = b;
             auto call = id(display_backlight).make_call();
@@ -304,7 +332,13 @@ interval:
 
   - interval: 1s
     then:
-      - lambda: panel::on_tick(panel::g_nav, panel::g_feed, millis());
+      - lambda: |-
+          panel::on_tick(panel::g_nav, panel::g_feed, millis());
+          if (panel::g_sys.mode != panel::SYS_OTA) {
+            if (id(wifi_id).is_connected()) panel::g_sys.mode = panel::SYS_NONE;
+            else if (millis() < 8000) panel::g_sys.mode = panel::SYS_BOOT;
+            else if (millis() > 45000) panel::g_sys.mode = panel::SYS_WIFI;   // no saved network joined: show the setup hint
+          }
       - script.execute: refresh_ui
 
 lvgl:
@@ -312,57 +346,15 @@ lvgl:
   touchscreens:
     - touchscreen_id: touch_panel
   buffer_size: 50%
-  top_layer:
-    widgets:
-      # Ring around the edge: blue ok, amber attention, red act, dark grey when there is no link.
-      - obj:
-          id: ring
-          align: CENTER
-          width: 480
-          height: 480
-          radius: 240
-          bg_opa: TRANSP
-          border_width: 14
-          border_color: 0x606060
-          clickable: false
-          scrollable: false
+  # The screens are drawn by panel_ui.h on the active page. These hidden widgets only make ESPHome compile LVGL's
+  # arc, line and label widgets in and link the four fonts (it leaves them out otherwise).
   pages:
     - id: p_main
       bg_color: 0x000000
       widgets:
-        - label: {id: w_title, align: CENTER, y: -168, width: 360, text_align: CENTER, long_mode: CLIP, text: "", text_font: montserrat_20, text_color: 0x4DA3FF}
-        - label: {id: w_big, align: CENTER, y: -105, width: 380, text_align: CENTER, long_mode: CLIP, text: "WAIT", text_font: montserrat_48, text_color: 0xFFFFFF}
-        - bar:
-            id: w_bar
-            align: CENTER
-            y: -62
-            width: 240
-            height: 8
-            min_value: 0
-            max_value: 100
-            value: 0
-            hidden: true
-            bg_color: 0x202020
-            indicator: {bg_color: 0x4DA3FF}
-        - label: {id: w_l0, align: CENTER, y: -25, width: 390, text_align: CENTER, long_mode: CLIP, text: "", text_font: montserrat_20, text_color: 0xFFFFFF}
-        - label: {id: w_l1, align: CENTER, y: 17, width: 390, text_align: CENTER, long_mode: CLIP, text: "", text_font: montserrat_20, text_color: 0xA0A6B0}
-        - label: {id: w_l2, align: CENTER, y: 59, width: 390, text_align: CENTER, long_mode: CLIP, text: "", text_font: montserrat_20, text_color: 0xA0A6B0}
-        - label: {id: w_l3, align: CENTER, y: 101, width: 390, text_align: CENTER, long_mode: CLIP, text: "", text_font: montserrat_20, text_color: 0xA0A6B0}
-        # Alert badge: a pill at the top edge, above the title, so it never covers the page data.
-        - label:
-            id: w_badge
-            align: CENTER
-            y: -204
-            width: 116
-            height: 26
-            hidden: true
-            text_align: CENTER
-            long_mode: CLIP
-            text: ""
-            text_font: montserrat_16
-            text_color: 0xFFFFFF
-            bg_color: 0xFF3B30
-            bg_opa: COVER
-            radius: 13
-            pad_top: 3
-        - label: {id: w_foot, align: CENTER, y: 160, width: 320, text_align: CENTER, long_mode: CLIP, text: "", text_font: montserrat_16, text_color: 0xA0A6B0}
+        - arc: {id: w_arc_keep, hidden: true, width: 10, height: 10}
+        - line: {id: w_line_keep, hidden: true, points: [[0, 0], [1, 1]]}
+        - label: {hidden: true, text: " ", text_font: f96}
+        - label: {hidden: true, text: " ", text_font: f40}
+        - label: {hidden: true, text: " ", text_font: f22}
+        - label: {hidden: true, text: " ", text_font: f15}
