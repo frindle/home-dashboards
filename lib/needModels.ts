@@ -66,6 +66,8 @@ export interface DriveIn {
   end_soc: number | null;
   miles: number;
   temp_f: number | null;
+  at_home?: boolean | null;       // the drive left from home (drive log)
+  end_at_home?: boolean | null;   // the drive ended at home
 }
 
 export interface FitDrive {
@@ -83,6 +85,9 @@ export interface NeedData {
   dayTemp: Map<string, number>;           // mean drive temp_f per local day
   dayTempMax: Map<string, number>;        // hottest drive temp_f per local day (stands in for the forecast high)
   workDays: Set<string>;
+  // Per local day whose drives all carry both home flags: miles driven away from home (out) and
+  // back to it (back). Home -> home loops count in neither.
+  legs: Map<string, { out: number; back: number }>;
 }
 
 const dayNum = (date: string): number => Math.round(Date.parse(date + 'T00:00:00Z') / 86_400_000);
@@ -94,10 +99,19 @@ export function buildNeedData(rows: DailyUse[], drives: DriveIn[], workdays: str
   const workDays = new Set(workdays);
   const temps = new Map<string, number[]>();
   const fit: FitDrive[] = [];
+  const legs = new Map<string, { out: number; back: number }>();
+  const unflagged = new Set<string>();
   for (const d of drives) {
     const ms = Date.parse(d.start);
     if (!Number.isFinite(ms)) continue;
     const date = localDate(ms);
+    if (typeof d.at_home !== 'boolean' || typeof d.end_at_home !== 'boolean' || !isNum(d.miles)) unflagged.add(date);
+    else {
+      const l = legs.get(date) ?? { out: 0, back: 0 };
+      if (d.at_home && !d.end_at_home) l.out += d.miles;
+      if (d.end_at_home && !d.at_home) l.back += d.miles;
+      legs.set(date, l);
+    }
     if (isNum(d.temp_f)) {
       const l = temps.get(date) ?? [];
       l.push(d.temp_f);
@@ -111,7 +125,27 @@ export function buildNeedData(rows: DailyUse[], drives: DriveIn[], workdays: str
   fit.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   const dayTemp = new Map<string, number>(), dayTempMax = new Map<string, number>();
   for (const [date, l] of temps) { dayTemp.set(date, l.reduce((s, x) => s + x, 0) / l.length); dayTempMax.set(date, Math.max(...l)); }
-  return { rows: sorted, rowByDate: new Map(sorted.map((r) => [r.date, r])), drives: fit, dayTemp, dayTempMax, workDays };
+  for (const date of unflagged) legs.delete(date);
+  return { rows: sorted, rowByDate: new Map(sorted.map((r) => [r.date, r])), drives: fit, dayTemp, dayTempMax, workDays, legs };
+}
+
+// A work day counts for the work-day need only when the car drove to work (Penn 2026-11-19: "only
+// averaging or using work days with drives to work"): a calendar work day with logged driving, and,
+// when the drive log has the home flags for that day, a drive away from or back to home (a day of
+// home -> home errands is not a commute).
+export function droveToWork(data: NeedData, r: DailyUse): boolean {
+  if (!data.workDays.has(r.date) || !(r.drives > 0) || !(r.miles > 0)) return false;
+  const l = data.legs.get(r.date);
+  return !l || l.out > 0 || l.back > 0;
+}
+
+// A work day's miles with a lost leg put back: the log has the drive to work but not the drive home
+// (or the other way round), so the day read as one way (11-16: 20 mi logged for a 40 mi day).
+export function commuteMilesOf(data: NeedData, r: DailyUse): number {
+  const l = data.legs.get(r.date);
+  if (l && l.out > 0 && l.back === 0) return r.miles + l.out;
+  if (l && l.back > 0 && l.out === 0) return r.miles + l.back;
+  return r.miles;
 }
 
 const knownUse = (r: DailyUse): r is DailyUse & { used_pct: number } => !r.unknown && isNum(r.used_pct);
@@ -121,7 +155,8 @@ const knownUse = (r: DailyUse): r is DailyUse & { used_pct: number } => !r.unkno
 export interface EwmaNeed { pct: number; source: 'kind' | 'all' }
 
 // Recency-weighted mean of used_pct over days before `asOf`, restricted to the
-// same kind (work/off) at WORK_RATE_HALF_LIFE_DAYS; with fewer than
+// same kind (work days the car drove to work, droveToWork / off days) at
+// WORK_RATE_HALF_LIFE_DAYS; with fewer than
 // MIN_DAYS_PER_KIND such days, the all-days mean at EWMA_HALF_LIFE_DAYS (the
 // %-unit twin of ewmaDailyKwh). null without any known day.
 export function ewmaNeed(data: NeedData, asOf: string, isWork: boolean): EwmaNeed | null {
@@ -134,7 +169,7 @@ export function ewmaNeed(data: NeedData, asOf: string, isWork: boolean): EwmaNee
     const wk = 0.5 ** (age / WORK_RATE_HALF_LIFE_DAYS);
     const wa = 0.5 ** (age / EWMA_HALF_LIFE_DAYS);
     aSum += wa * r.used_pct; aW += wa;
-    if (data.workDays.has(r.date) === isWork) { kSum += wk * r.used_pct; kW += wk; kN++; }
+    if (isWork ? droveToWork(data, r) : !data.workDays.has(r.date)) { kSum += wk * r.used_pct; kW += wk; kN++; }
   }
   if (kN >= MIN_DAYS_PER_KIND && kW > 0) return { pct: kSum / kW, source: 'kind' };
   return aW > 0 ? { pct: aSum / aW, source: 'all' } : null;
@@ -319,7 +354,7 @@ export function tempNeed(
     if (r.date >= asOf) break;
     if (!knownUse(r)) continue;
     if (isNum(r.parked_pct)) parked.push(Math.max(0, r.parked_pct));
-    if (data.workDays.has(r.date) && r.drives > 0 && r.miles > 0) miles.push(r.miles);
+    if (droveToWork(data, r)) miles.push(commuteMilesOf(data, r));
   }
   const commute = rollingMedian(miles, ROLLING_DAYS);
   if (commute === null || miles.length < 3) return null;
@@ -375,15 +410,15 @@ export function planNeed(
 // Re-run scripts/backtest-need.mjs monthly and update this map.
 export const LIVE_BAND_OVERRIDES: BandOverrides = new Map([[70, 0.25], [80, 0.25], [90, 0.25], [100, 0.25]]);
 
-// Recency-weighted mean of used_pct over the work days before `asOf` (the weights of ewmaNeed's
-// 'kind' branch), from one day up: unlike ewmaNeed it never falls back to the all-days mean.
-// null without a known work day.
+// Recency-weighted mean of used_pct over the work days before `asOf` that the car drove to work
+// (droveToWork; the weights of ewmaNeed's 'kind' branch), from one day up: unlike ewmaNeed it never
+// falls back to the all-days mean. null without such a day.
 export function workDayMean(data: NeedData, asOf: string): number | null {
   const now = dayNum(asOf);
   let sum = 0, w = 0;
   for (const r of data.rows) {
     if (r.date >= asOf) break;
-    if (!knownUse(r) || !data.workDays.has(r.date)) continue;
+    if (!knownUse(r) || !droveToWork(data, r)) continue;
     const wt = 0.5 ** (Math.max(0, now - dayNum(r.date)) / WORK_RATE_HALF_LIFE_DAYS);
     sum += wt * (r.used_pct as number); w += wt;
   }
