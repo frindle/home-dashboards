@@ -25,6 +25,6 @@ fi
 g++ -std=c++17 -O1 -Wall -Wno-unused -Wno-format-truncation $inc -o "$b/preview" preview.cpp "$b/liblvgl.a" -lm
 w=$run/work; rm -rf "$w"; mkdir -p "$w/out"
 $py shots.py "$w"
-"$b/preview" "$w/manifest.tsv" "$w/feeds" "$w/out"
+"$b/preview" "$w/manifest.tsv" "$w/feeds" "$w/out" "$here/../fonts"
 r=$run/result; rm -rf "$r"; mkdir -p "$r"
 $py compose.py "$w" "$r"

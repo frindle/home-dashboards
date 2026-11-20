@@ -2,7 +2,7 @@
 #ifndef LV_CONF_H
 #define LV_CONF_H
 // LVGL settings for the preview build. Mirrors the lv_conf.h ESPHome generates for crowpanel-21.yaml (RGB565, Montserrat
-// 14/16/20/48, label + bar, default theme, software renderer). Only the memory and OS lines differ so it runs on a PC.
+// 14/16/20/48 (+ tiny_ttf Montserrat for the panel), label + bar + arc + line, default theme, software renderer). Only the memory and OS lines differ so it runs on a PC.
 #define LV_COLOR_DEPTH 16
 #define LV_USE_STDLIB_MALLOC LV_STDLIB_BUILTIN
 #define LV_USE_STDLIB_STRING LV_STDLIB_CLIB
@@ -37,6 +37,12 @@
 #define LV_LABEL_TEXT_SELECTION 0
 #define LV_USE_LABEL 1
 #define LV_USE_BAR 1
+#define LV_USE_ARC 1
+#define LV_USE_LINE 1
+#define LV_USE_TINY_TTF 1
+#define LV_TINY_TTF_FILE_SUPPORT 0
+#define LV_TINY_TTF_CACHE_GLYPH_CNT 256
+#define LV_USE_FLOAT 0
 #define LV_USE_THEME_DEFAULT 1
 #define LV_THEME_DEFAULT_GROW 0
 #define LV_USE_THEME_SIMPLE 0

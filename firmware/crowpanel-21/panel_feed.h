@@ -17,6 +17,7 @@ namespace panel {
 
 // Same limits as MAX_MACS / MAX_LINKS / MAX_DISKS in lib/panelFeed.ts. More Macs than this are ignored.
 constexpr int MAX_MACS = 4, MAX_LINKS = 4, MAX_DISKS = 16, MAX_RR = 4, MAX_WHY = 3;
+constexpr int MAX_LAB = 4;
 constexpr int MAX_AL = 6, MAX_US_MODELS = 4;   // MAX_ALERTS / MAX_MODELS in lib/panelAlerts.ts, lib/panelUsage.ts
 constexpr int FEED_VERSION = 1;
 
@@ -60,7 +61,7 @@ struct Feed {
   int nwhy = 0;
   int br = -1;               // backlight percent from the server's night schedule, -1 = none
 
-  struct Bl { bool ok = false, st = false; int n = 0, al = 0; Mac m[MAX_MACS]; } bl;
+  struct Bl { bool ok = false, st = false; int n = 0, al = 0; char md[20] = ""; Mac m[MAX_MACS]; } bl;   // md: the account's model, optional (the server does not send it yet)
   struct Nw { bool ok = false, st = false, wan = false, rolling = false; int n = 0; Link l[MAX_LINKS]; } nw;
   struct Sd {
     bool ok = false, st = false;
@@ -72,7 +73,16 @@ struct Feed {
     bool ok = false, st = false;
     int plug = -1, soc = -1, lim = -1, amps = -1, tgt = -1, sf = 0, wk = -1;
     float kwh = -1, h = -1;
+    int rg = -1, ch = -1, mf = -1;   // range (miles), charging now (0/1), minutes to the limit (only while charging)
+    float kw = -1;                    // charging power
   } ev;
+  // Lab: things waiting on the user plus the model queue. `present` is false without the key (no Lab topic).
+  struct Lab {
+    bool present = false, ok = false, st = false;
+    int age = -1, q = -1, r = -1;    // seconds since the lab reported, queue length, running
+    struct Item { char t[40] = ""; int a = 0; bool w = false; } i[MAX_LAB];
+    int n = 0;
+  } lb;
   // Claude usage. `present` is false when the dashboard has the feature off (the key is absent): no page, no topic.
   struct Us {
     bool present = false, ok = false, st = false;
@@ -122,6 +132,7 @@ inline bool parse_feed(JsonObjectConst root, Feed &out, uint32_t now_ms) {
   f.bl.ok = ok_of(bl);
   f.bl.st = bl["st"].as<int>() == 1;
   f.bl.al = geti(bl["al"], 0);
+  cp(f.bl.md, sizeof f.bl.md, bl["md"] | "");
   if (f.bl.ok) {
     for (JsonObjectConst o : bl["m"].as<JsonArrayConst>()) {
       if (f.bl.n >= MAX_MACS) break;
@@ -184,6 +195,22 @@ inline bool parse_feed(JsonObjectConst root, Feed &out, uint32_t now_ms) {
     f.ev.plug = geti(ev["plug"]); f.ev.soc = geti(ev["soc"]); f.ev.lim = geti(ev["lim"]); f.ev.amps = geti(ev["amps"]);
     f.ev.tgt = geti(ev["tgt"]); f.ev.sf = geti(ev["sf"], 0); f.ev.wk = geti(ev["wk"]);
     f.ev.kwh = getf(ev["kwh"]); f.ev.h = getf(ev["h"]);
+    f.ev.rg = geti(ev["rg"]); f.ev.ch = geti(ev["ch"]); f.ev.mf = geti(ev["mf"]); f.ev.kw = getf(ev["kw"]);
+  }
+
+  // ---- Lab (absent = no topic)
+  JsonObjectConst lb = root["lb"];
+  f.lb.present = !lb.isNull();
+  f.lb.ok = f.lb.present && ok_of(lb);
+  f.lb.st = lb["st"].as<int>() == 1;
+  if (f.lb.ok) {
+    f.lb.age = geti(lb["age"]); f.lb.q = geti(lb["q"]); f.lb.r = geti(lb["r"]);
+    for (JsonObjectConst o : lb["i"].as<JsonArrayConst>()) {
+      if (f.lb.n >= MAX_LAB) break;
+      Feed::Lab::Item &it = f.lb.i[f.lb.n++];
+      cp(it.t, sizeof it.t, o["t"] | "");
+      it.a = geti(o["a"], 0); it.w = o["w"].as<int>() == 1;
+    }
   }
 
   // ---- Claude usage (absent = feature off)

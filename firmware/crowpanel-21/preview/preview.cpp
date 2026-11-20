@@ -1,8 +1,10 @@
 // Renders the panel's screens on a PC with the firmware's own code: panel_feed.h parses the sample feeds, panel_nav.h is
-// driven with the same knob calls the device makes, panel_view.h makes the text, panel_ui.h copies it onto LVGL widgets
-// that are created exactly as crowpanel-21.yaml declares them (same fonts, sizes, positions, colours, LVGL 9.5, RGB565).
-// Output: one P6 .ppm and one .txt (the View text) per shot. See preview/README-preview in run.sh.
+// driven with the same knob calls the device makes, panel_scene.h lays out the screen and panel_ui.h draws it on LVGL
+// objects (LVGL 9.5, RGB565). Fonts are the design's Montserrat TTFs rendered by tiny_ttf; the device uses ESPHome `font:`
+// bitmaps of the same files, so only the anti-aliasing can differ.
+// Output: one P6 .ppm and one .txt (the scene's text items) per shot.
 #include <cstdio>
+#include <ctime>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -31,76 +33,18 @@ static void flush_cb(lv_display_t *d, const lv_area_t *a, uint8_t *px) {
   lv_display_flush_ready(d);
 }
 
-// Same calls ESPHome generates for a `label:` with these keys (see build/.../main.cpp of the firmware).
-static lv_obj_t *mk_label(lv_obj_t *parent, int y, int w, const lv_font_t *font, uint32_t color) {
-  lv_obj_t *o = lv_label_create(parent);
-  lv_obj_set_style_align(o, LV_ALIGN_CENTER, LV_PART_MAIN);
-  lv_obj_set_style_text_align(o, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-  lv_obj_set_style_text_color(o, lv_color_hex(color), LV_PART_MAIN);
-  lv_obj_set_style_text_font(o, font, LV_PART_MAIN);
-  lv_obj_set_style_width(o, w, LV_PART_MAIN);
-  lv_obj_set_style_y(o, y, LV_PART_MAIN);
-  lv_label_set_text(o, "");
-  lv_label_set_long_mode(o, LV_LABEL_LONG_CLIP);
-  return o;
-}
-
-static Widgets W;
-
-static void build_ui() {
-  lv_obj_t *scr = lv_screen_active();
-  lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), LV_PART_MAIN);
-  W.title = mk_label(scr, -168, 360, &lv_font_montserrat_20, 0x4DA3FF);
-  W.big = mk_label(scr, -105, 380, &lv_font_montserrat_48, 0xFFFFFF);
-  lv_label_set_text(W.big, "WAIT");
-  W.bar = lv_bar_create(scr);
-  lv_obj_set_style_align(W.bar, LV_ALIGN_CENTER, LV_PART_MAIN);
-  lv_obj_set_style_bg_color(W.bar, lv_color_hex(0x202020), LV_PART_MAIN);
-  lv_obj_set_style_height(W.bar, 8, LV_PART_MAIN);
-  lv_obj_set_style_width(W.bar, 240, LV_PART_MAIN);
-  lv_obj_set_style_y(W.bar, -62, LV_PART_MAIN);
-  lv_obj_set_style_bg_color(W.bar, lv_color_hex(0x4DA3FF), LV_PART_INDICATOR);
-  lv_obj_add_flag(W.bar, LV_OBJ_FLAG_HIDDEN);
-  lv_bar_set_range(W.bar, 0, 100);
-  lv_bar_set_value(W.bar, 0, LV_ANIM_OFF);
-  W.l[0] = mk_label(scr, -25, 390, &lv_font_montserrat_20, 0xFFFFFF);
-  W.l[1] = mk_label(scr, 17, 390, &lv_font_montserrat_20, 0xA0A6B0);
-  W.l[2] = mk_label(scr, 59, 390, &lv_font_montserrat_20, 0xA0A6B0);
-  W.l[3] = mk_label(scr, 101, 390, &lv_font_montserrat_20, 0xA0A6B0);
-  W.foot = mk_label(scr, 160, 320, &lv_font_montserrat_16, 0xA0A6B0);
-  // alert badge (yaml: w_badge)
-  W.badge = lv_label_create(scr);
-  lv_obj_set_style_align(W.badge, LV_ALIGN_CENTER, LV_PART_MAIN);
-  lv_obj_set_style_bg_color(W.badge, lv_color_hex(0xFF3B30), LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(W.badge, LV_OPA_COVER, LV_PART_MAIN);
-  lv_obj_set_style_height(W.badge, 26, LV_PART_MAIN);
-  lv_obj_set_style_pad_top(W.badge, 3, LV_PART_MAIN);
-  lv_obj_set_style_radius(W.badge, 13, LV_PART_MAIN);
-  lv_obj_set_style_text_align(W.badge, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-  lv_obj_set_style_text_color(W.badge, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-  lv_obj_set_style_text_font(W.badge, &lv_font_montserrat_16, LV_PART_MAIN);
-  lv_obj_set_style_width(W.badge, 116, LV_PART_MAIN);
-  lv_obj_set_style_y(W.badge, -204, LV_PART_MAIN);
-  lv_label_set_text(W.badge, "");
-  lv_label_set_long_mode(W.badge, LV_LABEL_LONG_CLIP);
-  lv_obj_add_flag(W.badge, LV_OBJ_FLAG_HIDDEN);
-  // ring in the top layer
-  W.ring = lv_obj_create(lv_display_get_layer_top(disp));
-  lv_obj_set_style_align(W.ring, LV_ALIGN_CENTER, LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(W.ring, LV_OPA_TRANSP, LV_PART_MAIN);
-  lv_obj_set_style_border_color(W.ring, lv_color_hex(0x606060), LV_PART_MAIN);
-  lv_obj_set_style_border_width(W.ring, 14, LV_PART_MAIN);
-  lv_obj_set_style_height(W.ring, 480, LV_PART_MAIN);
-  lv_obj_set_style_radius(W.ring, 240, LV_PART_MAIN);
-  lv_obj_set_style_width(W.ring, 480, LV_PART_MAIN);
-  lv_obj_remove_flag(W.ring, (lv_obj_flag_t) (LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
-}
-
 static std::string slurp(const std::string &p) {
-  std::ifstream f(p);
+  std::ifstream f(p, std::ios::binary);
   std::stringstream ss;
   ss << f.rdbuf();
   return ss.str();
+}
+static const lv_font_t *ttf(const std::string &path, int px) {
+  std::string *d = new std::string(slurp(path));   // lives for the whole run
+  if (d->empty()) { fprintf(stderr, "missing font %s\n", path.c_str()); exit(2); }
+  const lv_font_t *f = lv_tiny_ttf_create_data(d->data(), d->size(), px);
+  if (!f) { fprintf(stderr, "font load failed %s\n", path.c_str()); exit(2); }
+  return f;
 }
 
 static void write_ppm(const std::string &p) {
@@ -110,17 +54,20 @@ static void write_ppm(const std::string &p) {
   fclose(f);
 }
 
-// manifest line: name \t feed file or - \t age in seconds \t actions (R+ R- P L) \t unused
+// manifest line: name \t feed file or - \t age in seconds \t actions (R+ R- P L F) \t options
+// options: b=<brightness>  noclock  sys=boot|wifi|ota  pct=<n>
 int main(int argc, char **argv) {
-  if (argc < 4) { fprintf(stderr, "usage: preview manifest.tsv feeds_dir out_dir\n"); return 2; }
-  std::string feeds = argv[2], out = argv[3];
+  if (argc < 5) { fprintf(stderr, "usage: preview manifest.tsv feeds_dir out_dir fonts_dir\n"); return 2; }
+  std::string feeds = argv[2], out = argv[3], fdir = argv[4];
   lv_init();
   lv_tick_set_cb([]() -> uint32_t { static uint32_t t = 0; return t += 20; });
   disp = lv_display_create(480, 480);
   lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);
   lv_display_set_buffers(disp, draw_buf, nullptr, sizeof draw_buf, LV_DISPLAY_RENDER_MODE_FULL);
   lv_display_set_flush_cb(disp, flush_cb);
-  build_ui();
+  const lv_font_t *fonts[4] = {ttf(fdir + "/Montserrat-SemiBold.ttf", 96), ttf(fdir + "/Montserrat-SemiBold.ttf", 40),
+                               ttf(fdir + "/Montserrat-Medium.ttf", 22), ttf(fdir + "/Montserrat-SemiBold.ttf", 15)};
+  g_ui.animate = false;
 
   std::ifstream mf(argv[1]);
   std::string line;
@@ -133,6 +80,7 @@ int main(int argc, char **argv) {
     while (std::getline(ls, t, '\t')) c.push_back(t);
     if (c.size() < 4) continue;
     const std::string &name = c[0];
+    std::string opts = c.size() > 4 ? c[4] : "";
     g_feed = Feed(); g_nav = Nav();
     const uint32_t T0 = 100000;
     uint32_t now = (uint32_t) (atof(c[2].c_str()) * 1000);
@@ -155,19 +103,34 @@ int main(int argc, char **argv) {
       now = T0 + now;   // age since the feed arrived
     }
     on_tick(g_nav, g_feed, now);
-    Clock ck; ck.valid = true; snprintf(ck.time, sizeof ck.time, "21:47"); snprintf(ck.date, sizeof ck.date, "Fri 20 Nov");
-    static View v;
-    make_view(g_feed, g_nav, ck, now, v);
-    apply(W, v);
+    // fixed clock: Friday 13 Nov 2026, 9:58 (the design's sample); TZ is UTC on the sandbox
+    Clock ck;
+    if (opts.find("noclock") == std::string::npos) {
+      struct tm tmv = {};
+      tmv.tm_year = 2026 - 1900; tmv.tm_mon = 10; tmv.tm_mday = 13; tmv.tm_hour = 9; tmv.tm_min = 58;
+      ck.valid = true; ck.t = timegm(&tmv);
+    }
+    int br = brightness(g_feed, g_nav, now);
+    size_t p = opts.find("b=");
+    if (p != std::string::npos) br = atoi(opts.c_str() + p + 2);
+    Sys sy;
+    std::string mode = "";
+    p = opts.find("sys=");
+    if (p != std::string::npos) mode = opts.substr(p + 4, opts.find(' ', p) - p - 4);
+    p = opts.find("pct=");
+    if (p != std::string::npos) sy.pct = atoi(opts.c_str() + p + 4);
+    snprintf(sy.version, sizeof sy.version, "1.5.0");
+    snprintf(sy.ap, sizeof sy.ap, "crowpanel-21 setup");
+    if (mode == "boot") sy.mode = SYS_BOOT; else if (mode == "wifi") sy.mode = SYS_WIFI; else if (mode == "ota") sy.mode = SYS_OTA;
+    if (sy.mode) make_system(sy, g_scene); else make_scene(g_feed, g_nav, ck, now, br, g_scene);
+    apply(g_ui, g_scene, fonts);
     lv_obj_invalidate(lv_screen_active());
     lv_obj_invalidate(lv_display_get_layer_top(disp));
     for (int i = 0; i < 3; i++) lv_timer_handler();
     lv_refr_now(disp);
     write_ppm(out + "/" + name + ".ppm");
     std::ofstream tf(out + "/" + name + ".txt");
-    tf << "title|" << v.title << "\nbig|" << v.big << "\nbar|" << v.bar << "\n";
-    for (int i = 0; i < 4; i++) tf << "l" << i << "|" << v.l[i] << "\n";
-    tf << "foot|" << v.foot << "\nbadge|" << v.badge << "\nring|" << std::hex << v.ring << std::dec << "\n";
+    for (int i = 0; i < g_scene.n; i++) if (g_scene.it[i].k == K_TEXT) tf << g_scene.it[i].s << "\n";
     n++;
   }
   fprintf(stderr, "rendered %d shots, %d failed\n", n, bad);
