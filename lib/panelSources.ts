@@ -3,8 +3,8 @@
 // Hosts and tokens come from the environment (see .env.example, "Panel feed"); a missing URL makes that section ok=0.
 import { rivianNightPlan } from '@/lib/rivianNightPlan';
 import {
-  earnedCents, parseBloom, parseEv, parseFluxCsv, parseStorage, parseUnraidNet, parseWan,
-  type Section, type Sources,
+  earnedCents, parseBloom, parseEv, parseFluxCsv, parseNetTotals, parseStorage, parseTotalsMap, parseUnraidNet, parseWan,
+  withExtraLink, withNetTotals, type NetTotals, type Section, type Sources,
 } from '@/lib/panelFeed';
 
 const FETCH_MS = 5_000;
@@ -58,16 +58,33 @@ async function storage(): Promise<Section> {
   return parseStorage(rows, nowS());
 }
 
+// Unraid's own traffic from Influx (the fallback when the monitor is down, and the third link when it is up).
+async function unraidLive(): Promise<Section> {
+  return parseUnraidNet(await queryFlux(fluxFor(['unraid_net'], ['rx_bps', 'tx_bps'])), nowS());
+}
+
+// Data over the last 1 / 7 / 30 days per link from the monitor's /api/totals. Best effort: no totals is not an error.
+// (Rolling windows. Calendar today / this week / this month needs a new endpoint in the monitor itself.)
+async function netTotals(nm: string | null): Promise<Record<string, NetTotals> | undefined> {
+  if (!nm) return undefined;
+  try {
+    return parseNetTotals(await getJson(`${nm}/api/totals`), parseTotalsMap(process.env.PANEL_NETMON_TOTALS_MAP));
+  } catch { return undefined; }
+}
+
 async function network(): Promise<Section> {
   const nm = base('PANEL_NETMON_URL');
+  const totals = netTotals(nm);
   if (nm) {
     try {
       const wan = parseWan(await getJson(`${nm}/api/fw_wan_rates`));
-      if (wan.ok) return wan;
+      if (wan.ok) {
+        const extra = await unraidLive().catch(() => undefined);   // optional third link
+        return withNetTotals(withExtraLink(wan, extra), await totals);
+      }
     } catch { /* fall through to Unraid's own traffic */ }
   }
-  const rows = await queryFlux(fluxFor(['unraid_net'], ['rx_bps', 'tx_bps']));
-  return parseUnraidNet(rows, nowS());
+  return withNetTotals(await unraidLive(), await totals);
 }
 
 async function darkbloom(): Promise<Section> {
