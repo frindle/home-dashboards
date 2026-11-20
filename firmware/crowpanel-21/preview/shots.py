@@ -295,7 +295,7 @@ shot("v4-darkbloom-clusters2", "clusters2", at("bl", True), "Darkbloom detail, 2
 shot("v4-darkbloom-clusters3", "clusters3", at("bl", True), "Darkbloom detail, 3 clusters, DARKBLOOM label")
 shot("v4-network-1g", "fastlink", at("nw"), "Network overview with 1.2 G")
 shot("v4-network-1g-detail", "fastlink", at("nw", True), "Network detail with 1.2 G")
-shot("v4-alert-grouped", "groupedalert", "L", "Grouped alert card, all links down in red")
+shot("v4-alert-grouped", "groupedalert", "", "Grouped alert card, all links down in red")
 shot("v4-warning-ring", "warnalert", at("nw"), "A warning gives an amber ring and marker on every screen")
 shot("v4-ev-updating", "evupdating", at("ev"), "EV overview, Updating 64%")
 shot("v4-ev-updating-detail", "evupdating", at("ev", True), "EV detail, SOFTWARE UPDATE")

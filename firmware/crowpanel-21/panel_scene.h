@@ -1091,13 +1091,13 @@ inline void lb_detail(B &b, const Feed &f) {
     wrap_words(l.i[i].t, F22, 260, 1, (char (*)[44]) tt);
     b.text(tt, F22, u ? C_WARN : C_WHITE, 126, y + BASE22, 1, 270);
   }
-  b.rect(100, s.y[dv], 280, 2, 0, C_TRACK);
-  b.text("AI QUEUE", F15, C_LABEL, 100, s.y[q] + BASE22, 1, 120, 2);
+  b.rect(80, s.y[dv], 320, 2, 0, C_TRACK);
+  b.text("AI QUEUE", F15, C_LABEL, 80, s.y[q] + BASE22, 1, 110, 2);
   char t[28];
   if (l.q >= 0 && l.r >= 0) snprintf(t, sizeof t, "%d jobs · %d running", l.q, l.r);
   else if (l.q >= 0) snprintf(t, sizeof t, "%d jobs", l.q);
   else snprintf(t, sizeof t, "—");
-  b.text(t, F22, l.q >= 0 ? C_WHITE : C_IDLE, 380, s.y[q] + BASE22, 2, 230);
+  b.text(t, F22, l.q >= 0 ? C_WHITE : C_IDLE, 400, s.y[q] + BASE22, 2, 210);
 }
 
 // ----- alert view
