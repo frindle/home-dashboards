@@ -14,12 +14,13 @@
 //       The key does not change when a number inside the reason changes (cache 91% -> 92%), so the panel can tell a NEW
 //       reason (a key it has not seen in this red spell) from the same one moving. why[] is for display only.
 //   al  only when something needs attention: priority alerts, most important first, at most MAX_ALERTS (12):
-//       [{ k stable key, tp topic "bl"|"nw"|"sd"|"ev"|"us", sv "r" red | "a" amber, m plain-language message (<= 90 chars),
-//          a seconds active }]. See lib/panelAlerts.ts. ac = true alert count, only when the list was cut.
+//       [{ k stable key, tp topic "bl"|"nw"|"sd"|"ev"|"us", sv "r" red | "a" amber, t line 1 (what), w line 2 (where),
+//          m plain-language message (<= 90 chars; dropped when the body is tight), a seconds active, c/u group count and noun }]. See lib/panelAlerts.ts. ac = true alert count, only when the list was cut.
 //       Red here is the same thing as lvl "r"; rr and go stay for older firmware, the panel itself uses al.
 //   br  only when PANEL_NIGHT_HOURS is set, or presence is on and says nobody is at the desk: backlight brightness the
 //       panel should use now, percent 1..100
-//   bl  Darkbloom per Mac (at most MAX_MACS):  m: [{ n name, on 1 serving, s state text, w watts, jobs sandbox jobs,
+//   sa  in any section with st=1: seconds the data is old. The panel shows "UPDATED n MIN AGO" only from 10 minutes on.
+//   bl  Darkbloom per Mac (at most MAX_MACS):  m: [{ n name, on 1 serving, s state text, w watts, jobs sandbox jobs, ij inference jobs, cl cluster,
 //                                 td earned today (cents), tm earned this month (cents), age seconds since last
 //                                 power minute, sl 1 silent (alert) }],   al: open bloom-ledger alert count
 //   nw  network:            src "wan" | "unraid",  l: [{ n name, d down Mbps, u up Mbps,
@@ -157,6 +158,7 @@ export function parseStorage(rows: FluxRow[], nowS: number): Section {
   return {
     ok: 1,
     st: newest && nowS - newest > INFLUX_FRESH_S ? 1 : 0,
+    ...(newest && nowS - newest > INFLUX_FRESH_S ? { sa: nowS - newest } : {}),
     ...compact({
       tot: { s: kbToGb(s), u: kbToGb(u) },
       d: list,
@@ -194,6 +196,35 @@ function mergeCachePool(list: DiskRow[]): void {
   list.splice(at, 0, pool);
 }
 
+// ---------- short display names ----------
+
+// PANEL_SHORT_NAMES="studio-m4-ultra=Studio,Fiber 10G=Fiber,disk12=D12": the name the panel shows for a Mac, internet link
+// or disk. The key is the full name (the first 12 / 10 / 8 characters the feed would have sent also match). A name with no
+// entry shows as before: its full name.
+export function parseShortNames(text: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const part of (text ?? '').split(',')) {
+    const i = part.indexOf('=');
+    const k = part.slice(0, i).trim(), v = part.slice(i + 1).trim();
+    if (i > 0 && k && v) out[k] = v;
+  }
+  return out;
+}
+const NAME_LIMIT: Record<string, number> = { m: 12, l: 10, d: 8 };
+export function shortName(names: Record<string, string>, full: string, limit = 0): string {
+  const hit = names[full] ?? (limit ? Object.entries(names).find(([k]) => str(k, limit) === full)?.[1] : undefined);
+  return hit ? str(hit, 12) : full;
+}
+export function applyShortNames(sec: Section, names: Record<string, string>): Section {
+  if (!Object.keys(names).length || !sec.ok) return sec;
+  const out: Section = { ...sec };
+  for (const key of ['m', 'l', 'd'] as const) {
+    const rows = sec[key] as { n?: string }[] | undefined;
+    if (Array.isArray(rows)) out[key] = rows.map((r) => (typeof r.n === 'string' ? { ...r, n: shortName(names, r.n, NAME_LIMIT[key]) } : r));
+  }
+  return out;
+}
+
 // ---------- network ----------
 
 // network-bandwidth-monitor /api/fw_wan_rates: [{ iface, name, rx_mbps, tx_mbps }]
@@ -224,7 +255,7 @@ export function parseUnraidNet(rows: FluxRow[], nowS: number): Section {
   }
   const main = by.get('br0') ?? [...by.values()][0];
   if (!main) return { ok: 0, st: 0 };
-  return { ok: 1, st: newest && nowS - newest > INFLUX_FRESH_S ? 1 : 0, src: 'unraid', l: [compact({ n: 'Unraid', d: rnd(main.d, 1), u: rnd(main.u, 1) })] };
+  return { ok: 1, st: newest && nowS - newest > INFLUX_FRESH_S ? 1 : 0, ...(newest && nowS - newest > INFLUX_FRESH_S ? { sa: nowS - newest } : {}), src: 'unraid', l: [compact({ n: 'Unraid', d: rnd(main.d, 1), u: rnd(main.u, 1) })] };
 }
 
 // network-bandwidth-monitor GET /api/totals: { "1d": [{ iface, rx_bytes, tx_bytes, total_bytes }], "7d": [...], "30d": [...] }
@@ -313,6 +344,8 @@ export function parseBloom(inp: BloomInputs): Section {
       s: str(state, 12) || undefined,
       w: rnd(r.watts),
       jobs: rnd(r.sandbox_jobs),
+      ij: rnd(r.inference_jobs),
+      cl: r.cluster == null || r.cluster === '' ? undefined : str(String(r.cluster), 8),
       td: e?.day,
       tm: e?.month,
       age: rnd(r.age_s),
@@ -335,6 +368,8 @@ export interface EvInput {
   amps?: number | null; kwh?: number | null; windowHours?: number | null; targetPct?: number | null;
   shortfall?: boolean | null; isWork?: boolean | null;
   rangeMi?: number | null; powerKw?: number | null; charging?: boolean | null; minutesToLimit?: number | null;
+  /** A Rivian software update in progress: percent when the car reports it, and the version numbers. Shown inside EV. */
+  update?: { pct?: number | null; from?: string | null; to?: string | null } | null;
 }
 export function parseEv(i: EvInput | null): Section {
   if (!i) return { ok: 0, st: 0 };
@@ -346,6 +381,7 @@ export function parseEv(i: EvInput | null): Section {
       sf: i.shortfall ? 1 : undefined, wk: i.isWork == null ? undefined : i.isWork ? 1 : 0,
       rg: rnd(i.rangeMi), kw: rnd(i.powerKw, 1), ch: i.charging == null ? undefined : i.charging ? 1 : 0,
       mf: i.charging && i.minutesToLimit != null && i.minutesToLimit > 0 ? rnd(i.minutesToLimit) : undefined,
+      up: i.update ? compact({ p: rnd(i.update.pct), f: i.update.from ? str(i.update.from, 10) : undefined, t: i.update.to ? str(i.update.to, 10) : undefined }) : undefined,
     }),
   };
 }
@@ -357,7 +393,7 @@ export { CACHE_AMBER_PCT, CACHE_RED_PCT } from './panelAlerts.ts';
 // go: the section the panel jumps to on red ("bl" Darkbloom, "sd" storage), from the first red reason.
 // The older reasons are decided here; the newer ones (array full, data cap, failover, Claude usage) come from the alert
 // list (lib/panelAlerts.ts) so the ring colour and the alert list always agree.
-const NEWER_ALERT = (k: string) => k === 'arrayfull' || k === 'cap' || k === 'failover' || k.startsWith('usage:');
+const NEWER_ALERT = (k: string) => k === 'arrayfull' || k === 'cap' || k === 'failover' || k === 'wan' || k.startsWith('usage:');
 
 export function alertLevel(sec: { bl: Section; nw: Section; sd: Section; ev: Section; us?: Section }, cfg: AlertConfig = DEFAULT_ALERT_CONFIG): { lvl: Level; why: string[]; go?: string; rr?: string[] } {
   const red: string[] = [], amber: string[] = [], keys: string[] = [];
@@ -380,7 +416,6 @@ export function alertLevel(sec: { bl: Section; nw: Section; sd: Section; ev: Sec
     if (red.length > n) go ??= 'sd';
   }
   const nw = sec.nw as Section & { l?: { d?: number; u?: number }[] };
-  if (nw.ok && nw.src === 'wan' && (nw.l ?? []).length && (nw.l ?? []).every((x) => (x.d ?? 0) < 0.01 && (x.u ?? 0) < 0.01)) amber.push('wan:idle');
   if ((sec.ev as Section & { sf?: number }).sf) amber.push('ev:short');
   for (const a of collectAlerts(sec, cfg)) {
     if (!NEWER_ALERT(a.k)) continue;
@@ -526,15 +561,20 @@ export async function buildPanel(src: Sources, opts: AggOpts = {}): Promise<Pane
     if (k === 'us' || k === 'lb') return sec;   // in-memory numbers with their own stale window: no last-good copy
     if (sec.ok) { good.set(k, { at: nowMs, sec }); return sec; }
     const g = good.get(k);
-    if (g && nowMs - g.at <= LAST_GOOD_MAX_MS) return { ...g.sec, st: 1 };
+    if (g && nowMs - g.at <= LAST_GOOD_MAX_MS) return { ...g.sec, st: 1, sa: Math.round((nowMs - g.at) / 1000) };
     return { ok: 0, st: 0 };
   }));
   const [bl, nw, sd, ev] = out;
   const us = src.us ? out[4] : undefined;
   const lb = src.lb ? out[src.us ? 5 : 4] : undefined;
   const cfg = opts.alertCfg ?? DEFAULT_ALERT_CONFIG;
-  const { lvl, why, go, rr } = alertLevel({ bl, nw, sd, ev, ...(us ? { us } : {}) }, cfg);
-  const { al, ac } = capAlerts(trackSince(opts.alertSince ?? new Map(), collectAlerts({ bl, nw, sd, ev, ...(us ? { us } : {}) }, cfg), nowMs));
+  const level = alertLevel({ bl, nw, sd, ev, ...(us ? { us } : {}) }, cfg);
+  const all = collectAlerts({ bl, nw, sd, ev, ...(us ? { us } : {}) }, cfg);
+  const { al, ac } = capAlerts(trackSince(opts.alertSince ?? new Map(), all, nowMs));
+  // The ring is never calmer than the worst alert the panel will list: a warning anywhere is at least amber.
+  const worst: Level = all.some((x) => x.sv === 'r') ? 'r' : all.length ? 'a' : 'g';
+  const lvl: Level = level.lvl === 'r' || worst === 'r' ? 'r' : level.lvl === 'a' || worst === 'a' ? 'a' : 'g';
+  const { why, go, rr } = level;
   const body: PanelBody = {
     v: 1, t: Math.floor(nowMs / 1000), lvl, why, ...(go ? { go } : {}), ...(rr ? { rr } : {}),
     ...(opts.dim ? { br: brightnessAt(opts.dim, nowMs) } : {}),
@@ -548,6 +588,9 @@ export async function buildPanel(src: Sources, opts: AggOpts = {}): Promise<Pane
 // stay), and only then the lowest-priority alerts.
 export function fitBody(body: PanelBody): PanelBody {
   const size = () => JSON.stringify(body).length;
+  if (size() <= PANEL_MAX_BYTES) return body;
+  // The panel draws the title and place (t, w); the long message (m) is only for logs.
+  if (body.al) body.al = body.al.map((x) => { const y = { ...x }; delete y.m; return y; });
   if (size() <= PANEL_MAX_BYTES) return body;
   const nw = body.nw as Section & { l?: Record<string, unknown>[] };
   if (nw.l) body.nw = { ...nw, l: nw.l.map(({ t1, t7, t30, ...r }) => r) };

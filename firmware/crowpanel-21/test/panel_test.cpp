@@ -85,6 +85,7 @@ static Feed with(const char *al, const char *us = nullptr, int ac = 0, uint32_t 
   b.insert(b.find("\"bl\""), add + ",");
   Feed f; load(f, b, at); return f;
 }
+static Feed feed_json(const std::string &b, uint32_t at = 1000) { Feed f; load(f, b, at); f.at_ms = at; return f; }
 #define A_CACHE R"({"k":"cache","tp":"sd","sv":"r","m":"The cache pool is 93% full. Free space or move data off it.","a":30})"
 #define A_SILENT R"({"k":"silent:mini","tp":"bl","sv":"r","m":"mini has stopped serving Darkbloom (no activity for over 30 min).","a":5})"
 #define A_WAN R"({"k":"wan","tp":"nw","sv":"a","m":"Every internet link looks idle. The connection may be down.","a":700})"
@@ -302,6 +303,12 @@ static void check_fit(const Scene &s, const char *what) {
   CHECK(s.n < MAXI && s.ng <= MAXG);
 }
 
+// the alert marker pill (30 px high), if the scene has one
+static const Group *marker_group(const Scene &s) {
+  for (int i = 0; i < s.ng; i++) if (s.g[i].pill && s.g[i].ph == 30) return &s.g[i];
+  return nullptr;
+}
+
 static void test_scene() {
   Clock ck; ck.valid = true; ck.t = 1763063880;   // some time in Nov 2025
   uint32_t now = 1000;
@@ -328,7 +335,7 @@ static void test_scene() {
   g.bl.md[0] = 0;
   // Darkbloom detail: no per-Mac model, one status line each
   n.detail = true; s = sc_of(g, n, now, 60, ck);
-  CHECK(has_text(s, "serving") && has_text(s, "$12.34") && !has_text(s, "gemma"));
+  CHECK(has_text(s, "inference") && has_text(s, "sandbox 3 now") && has_text(s, "$12.34") && has_text(s, "TODAY") && !has_text(s, "gemma"));
 
   // Network overview: down/up per link, footer
   n = Nav(); n.topic = T_NW; s = sc_of(g, n, now, 60, ck);
@@ -360,9 +367,9 @@ static void test_scene() {
   // Claude, Lab (when present), Clock
   Feed u = with(A_USAGE, US_OK, 0, 1000);
   n = Nav(); n.topic = T_US; s = sc_of(u, n, now, 60, ck);
-  CHECK(find_text(s, "96") && has_text(s, "resets in 1 h 20 m") && has_text(s, "WEEK") && find_text(s, "40%") && has_text(s, "resets "));
+  CHECK(find_text(s, "96") && has_text(s, "resets in 1 h 20 min") && has_text(s, "WEEK") && find_text(s, "40%") && has_text(s, "resets "));
   n.detail = true; s = sc_of(u, n, now, 60, ck);
-  CHECK(has_text(s, "Week · all") && has_text(s, "Week · Opus") && has_text(s, "BURN") && has_text(s, "limit in 15 m"));
+  CHECK(has_text(s, "Week · all") && has_text(s, "Week · Opus") && has_text(s, "BURN") && has_text(s, "limit in 15 min"));
   n = Nav(); n.topic = T_CLOCK; s = sc_of(g, n, now, 60, ck);
   CHECK(has_text(s, ":") && (find_text(s, "AM") || find_text(s, "PM")) && has_text(s, "2025") == false && has_text(s, "BLOOM") && has_text(s, "DISKS") && !has_text(s, "LAB"));
   Clock none; s = sc_of(g, n, now, 60, none); CHECK(has_text(s, "Waiting for the time"));
@@ -372,8 +379,8 @@ static void test_scene() {
   snprintf(lb.lb.i[0].t, sizeof lb.lb.i[0].t, "Review run 12"); lb.lb.i[0].a = 7200; lb.lb.i[0].w = true;
   CHECK(topic_on(lb, T_LAB) && dot_count(lb) == dot_count(g) + 1);
   n = Nav(); n.topic = T_LAB; s = sc_of(lb, n, now, 60, ck);
-  CHECK(find_text(s, "3") && has_text(s, "waiting on you") && find_text(s, "7") && has_text(s, "in model queue"));
-  n.detail = true; s = sc_of(lb, n, now, 60, ck); CHECK(has_text(s, "Review run 12") && find_text(s, "2 h") && has_text(s, "7 · 2 running"));
+  CHECK(find_text(s, "3") && has_text(s, "waiting on you") && has_text(s, "7 jobs") && has_text(s, "AI QUEUE") && has_text(s, "1 urgent") == false && has_text(s, "Review run 12"));
+  n.detail = true; s = sc_of(lb, n, now, 60, ck); CHECK(has_text(s, "Review run 12") && has_text(s, "7 jobs") && has_text(s, "2 running") && has_text(s, "LAB · WAITING ON YOU"));
 }
 
 // ---- many links and many alerts (feed with N links / N alerts)
@@ -452,14 +459,16 @@ static void test_alert_dots() {
     CHECK(has_text(s, t));
     int dots = 0, hollow = 0, wide = 0;
     for (int i = 0; i < s.n; i++) if (s.it[i].k == K_RECT && s.it[i].h == 10) { dots++; if (s.it[i].bw == 2) hollow++; if (s.it[i].w == 22) wide++; }
-    if (n <= 7) { CHECK(dots == n + 1 && hollow == 1 && wide == 1); } else CHECK(dots == 0);
+    if (n <= 6) { CHECK(dots == n + 1 && hollow == 1 && wide == 1); } else CHECK(dots == 0);   // 7 dots at most, the Done card included
+    CHECK(dots <= 7);
     // turn past the last alert: the Done card, with its own hollow dot current
     for (int i = 0; i < n; i++) on_rotate(nv, f, 1, 3000 + i);
     Scene d = sc_of(f, nv, 4000, 60, ck);
     CHECK(has_text(d, "Done"));
     dots = 0; hollow = 0; wide = 0;
     for (int i = 0; i < d.n; i++) if (d.it[i].k == K_RECT && d.it[i].h == 10) { dots++; if (d.it[i].bw == 2) hollow++; if (d.it[i].w == 22) wide++; }
-    if (n <= 7) { CHECK(dots == n + 1 && hollow == 1 && wide == 1); } else CHECK(dots == 0);
+    if (n <= 6) { CHECK(dots == n + 1 && hollow == 1 && wide == 1); } else CHECK(dots == 0);   // 7 dots at most, the Done card included
+    CHECK(dots <= 7);
   }
 }
 
@@ -607,6 +616,22 @@ static void test_pools() {
     snprintf(w.sd.d[0].n, sizeof w.sd.d[0].n, "disk-long-1");
     sweep(w, "worst strings", ck);
   }
+  {   // design v4 scenes: 3 clusters with long names, everything old, the car updating, a grouped alert, a long wrapped alert
+    std::string mc = R"({"n":"studio-m4-ultra","s":"serving","on":1,"w":1234,"td":123456,"tm":4567800,"jobs":12,"ij":9,"cl":"alpha-one","age":3},{"n":"mini c x","s":"serving","on":1,"td":612,"tm":21800,"jobs":0,"ij":1,"cl":"beta"},{"n":"laptop-b","s":"idle","on":1,"td":257,"tm":2395,"cl":"gamma"},{"n":"desk-d long","s":"silent","on":0,"td":0,"tm":200,"age":10800,"cl":"gamma"})";
+    Feed c3 = feed_json(body("g", "", "", "", mc.c_str())); snprintf(c3.bl.md, sizeof c3.bl.md, "gemma-3-27b-it-long");
+    sweep(c3, "clusters3", ck);
+    Feed old = disks16(feed_with(12, 3)); old.bl.st = old.nw.st = old.sd.st = old.ev.st = true;
+    old.bl.sa = old.nw.sa = old.sd.sa = old.ev.sa = 4000; old.bl.n = 4; snprintf(old.bl.m[0].n, sizeof old.bl.m[0].n, "studio m4 ultra");
+    sweep(old, "all old", ck);
+    std::string eb = body("g", "", "", ""); size_t p = eb.find("\"wk\":1}");
+    eb.insert(p + 6, R"(,"up":{"p":64,"f":"2026.42.1","t":"2026.46.3"})");
+    sweep(feed_json(eb), "ev updating", ck);
+    const char *ga = R"({"k":"wan","tp":"nw","sv":"r","t":"No traffic on 6 links with long words","w":"Cox · Starlink · Fiber · LTE · Backup · Office","c":6,"u":"links","m":"","a":720})";
+    sweep(with(ga, US_OK, 0, 1000), "grouped alert", ck);
+    Feed lab6 = feed_with(0, 0); lab6.lb.present = lab6.lb.ok = true; lab6.lb.n = 6; lab6.lb.q = 7; lab6.lb.r = 2;
+    for (int i = 0; i < 6; i++) { snprintf(lab6.lb.i[i].t, sizeof lab6.lb.i[i].t, "Approve model swap %d plus a long tail", i); lab6.lb.i[i].w = i < 2; }
+    sweep(lab6, "lab 6 items", ck);
+  }
   for (int k = 0; k < 4; k++) printf("pool %-6s peak %2d of %2d (headroom %2d) at: %s\n", POOLN[k], g_worst.used[k], POOL[k], POOL[k] - g_worst.used[k], g_worst.at[k]);
 }
 
@@ -631,8 +656,9 @@ static void test_states() {
   s = sc_of(g, n, 2000, 60, ck); bool pill = false; for (int i = 0; i < s.ng; i++) if (s.g[i].pill && s.g[i].ph == 30) pill = true; CHECK(!pill);
   Feed two = with(A_CACHE "," A_WAN, nullptr, 0, 1000);
   Nav b; s = sc_of(two, b, 2000, 60, ck);
-  CHECK(s.ng >= 1 && s.g[0].pill && s.g[0].pbg == C_BAD && s.g[0].py == 52 && find_text(s, "2")->col == C_BG);
-  b.topic = T_SD; s = sc_of(two, b, 2000, 60, ck); CHECK(s.g[0].py == 56);
+  const Group *mg = marker_group(s);
+  CHECK(mg && mg->pbg == C_BAD && mg->py == 52 && find_text(s, "2")->col == C_BG);
+  b.topic = T_SD; s = sc_of(two, b, 2000, 60, ck); mg = marker_group(s); CHECK(mg && mg->py == 56);
   // snoozing removes it from the count
   Nav sn; on_long_press(sn, two, 2000); on_long_press(sn, two, 2001);
   s = sc_of(two, sn, 2002, 60, ck); CHECK(sn.alert);
@@ -662,7 +688,7 @@ static void test_system() {
   y.mode = SYS_WIFI; snprintf(y.ap, sizeof y.ap, "crowpanel-21 setup"); make_system(y, s);
   CHECK(has_text(s, "Wi-Fi setup") && has_text(s, "On your phone, join") && find_text(s, "crowpanel-21 setup") && has_text(s, "THEN FOLLOW"));
   y.mode = SYS_OTA; y.pct = 64; make_system(y, s);
-  CHECK(has_text(s, "UPDATING") && find_text(s, "64") && has_text(s, "DON'T UNPLUG") && count_kind(s, K_ARC) == 2);
+  CHECK(has_text(s, "PANEL · UPDATING") && find_text(s, "64") && has_text(s, "DON'T UNPLUG") && count_kind(s, K_ARC) == 2);
 }
 
 static void test_brightness() {
@@ -674,11 +700,272 @@ static void test_brightness() {
   f.br = 80; CHECK(brightness(f, n, 3000) == 80);
 }
 
+
+// ---------- design v4: ring, old-data pill, alert text, groups, EV update, Darkbloom clusters, network
+// The feed with the alert list and the usage section in the body (like with(), but any extra JSON too).
+static std::string put_before(std::string b, const char *key, const std::string &add) { b.insert(b.find(key), add); return b; }
+
+#define A_DISK96 R"({"k":"full","tp":"sd","sv":"a","t":"disk1 96% full","w":"Unraid · disk1","m":"Disk disk1 is 96% full. Check it.","a":60})"
+
+// bug 1: a warning anywhere gives the amber ring and the "! N" marker on EVERY screen, dim, old and empty ones included
+static void test_ring_everywhere() {
+  Clock ck; ck.valid = true; ck.t = 1763063880;
+  Feed f = with(A_DISK96, US_OK, 0, 1000);
+  CHECK(f.lvl == 'g' && f.nal == 1);   // the feed itself says green; the panel still shows the warning
+  Feed old = f; old.sd.st = true; old.sd.sa = 1500; old.bl.st = true; old.bl.sa = 1500;
+  Feed nodata = f; nodata.sd.ok = false; nodata.ev.ok = false;
+  const Feed *fs[3] = {&f, &old, &nodata};
+  for (int v = 0; v < 3; v++)
+    for (int br : {60, 3})
+      for (int t = 0; t < T_COUNT; t++) {
+        if (!topic_on(*fs[v], t)) continue;
+        for (int det = 0; det < 2; det++) {
+          Nav n; n.topic = t; n.detail = det && detail_count(*fs[v], t) > 0;
+          if (br == 3 && n.detail) continue;
+          Scene s = sc_of(*fs[v], n, 2000, br, ck);
+          const Group *mg = marker_group(s);
+          char nm[48]; snprintf(nm, sizeof nm, "feed%d br%d t%d d%d", v, br, t, det);
+          if (!(s.ring == C_WARN && s.ringw == 6 && mg && mg->pbg == C_WARN && find_text(s, "1"))) printf("ring/marker missing: %s\n", nm);
+          CHECK(s.ring == C_WARN && s.ringw == 6 && mg && mg->pbg == C_WARN && find_text(s, "1"));
+        }
+      }
+  // a red alert wins over amber; nothing at all stays green
+  Feed r = with(A_DISK96 "," A_CACHE, nullptr, 0, 1000);
+  Nav n; Scene s = sc_of(r, n, 2000, 60, ck); CHECK(s.ring == C_BAD && s.ringw == 10);
+  s = sc_of(green(), n, 2000, 60, ck); CHECK(s.ring == C_OK && !marker_group(s));
+}
+
+// bug 2: no value, no grey arc track
+static void test_no_arc_without_value() {
+  Clock ck; ck.valid = true; ck.t = 1763063880;
+  Feed f = green(); f.at_ms = 1000;
+  Feed nd = f; nd.sd.ok = false;
+  Nav n; n.topic = T_SD;
+  Scene s = sc_of(nd, n, 2000, 60, ck); CHECK(count_kind(s, K_ARC) == 0);
+  Feed nv = f; nv.sd.ts = 0; nv.sd.tu = 0;    // ok, but no totals: "—" without a track
+  s = sc_of(nv, n, 2000, 60, ck); CHECK(count_kind(s, K_ARC) == 0 && find_text(s, "—"));
+  Feed ev = f; ev.ev.soc = -1; n.topic = T_EV; s = sc_of(ev, n, 2000, 60, ck); CHECK(count_kind(s, K_ARC) == 0);
+  n.topic = T_SD; s = sc_of(f, n, 2000, 60, ck); CHECK(count_kind(s, K_ARC) == 2);   // with a value: track + fill
+}
+
+// bug 3: the old-data pill shows from 10 minutes on, says how old, and never pushes the hint down
+static void test_pill_timing() {
+  Clock ck; ck.valid = true; ck.t = 1763063880;
+  Feed f = with("", US_OK, 0, 1000);
+  for (int t = 0; t < T_CLOCK; t++) {
+    if (t == T_LAB) continue;
+    Feed g = f;
+    g.bl.st = g.nw.st = g.sd.st = g.ev.st = g.us.st = true;
+    g.bl.sa = g.nw.sa = g.sd.sa = g.ev.sa = g.us.sa = 120;
+    Nav n; n.topic = t;
+    Scene s0 = sc_of(g, n, 2000, 60, ck);
+    CHECK(!has_text(s0, "UPDATED") && !has_text(s0, "OLD DATA"));                       // 2 minutes old: nothing yet
+    g.bl.sa = g.nw.sa = g.sd.sa = g.ev.sa = g.us.sa = 599 - 1;
+    CHECK(!has_text(sc_of(g, n, 2000, 60, ck), "UPDATED"));                              // 9 min 58 s + 1 s: still not
+    g.bl.sa = g.nw.sa = g.sd.sa = g.ev.sa = g.us.sa = 1080;
+    Scene s1 = sc_of(g, n, 2000, 60, ck);
+    CHECK(has_text(s1, "UPDATED 18 MIN AGO"));
+    bool hist = false;
+    for (int i = 0; i < s1.n; i++) if (s1.it[i].k == K_ICON && s1.it[i].icon == IC_HISTORY) hist = true;
+    bool pill = false;
+    for (int i = 0; i < s1.ng; i++) if (s1.g[i].pill && s1.g[i].ph == 26 && s1.g[i].pbg == C_TRACK) pill = true;
+    CHECK(hist && pill);
+    // hint stays put: same baseline as the fresh screen, and nothing else sits below the content area
+    const Item *h0 = find_text(s0, "press for detail"), *h1 = find_text(s1, "press for detail");
+    CHECK(h0 && h1 && h0->y == h1->y);
+    for (int i = 0; i < s1.n; i++) {
+      const Item &x = s1.it[i];
+      if (x.k != K_TEXT || strcmp(x.s, "press for detail") == 0 || x.y >= 380) continue;
+      if (x.y > 368) { printf("old pill pushed '%s' to y %d (topic %d)\n", x.s, x.y, t); CHECK(false); }
+    }
+  }
+  // elapsed time counts: 9 min 20 s old at the feed, a minute more on the panel
+  Feed g = f; g.bl.st = true; g.bl.sa = 560;
+  Nav n; Scene s = sc_of(g, n, 1000 + 60000, 60, ck); CHECK(has_text(s, "UPDATED 10 MIN AGO"));
+  // an hour and a bit, a day: the design's units, never a bare "M"
+  g.bl.sa = 3600 + 14 * 60 + 120; s = sc_of(g, n, 1000, 60, ck); CHECK(has_text(s, "UPDATED 1 H 16 MIN AGO"));
+  g.bl.sa = 3 * 86400; s = sc_of(g, n, 1000, 60, ck); CHECK(has_text(s, "UPDATED 3 D AGO"));
+  // old Mac screen with 4 Macs, the tightest one
+  std::string m4 = R"({"n":"studio-m4-ultra","s":"serving","on":1,"td":123456,"tm":4567800,"jobs":12},{"n":"mini c","s":"serving","on":1,"td":612,"tm":21800,"jobs":0},{"n":"laptop-b","s":"idle","on":1,"td":257,"tm":2395},{"n":"desk-d","s":"silent","on":0,"td":0,"tm":200,"age":10800})";
+  Feed w = feed_json(body("g", "", "", "", m4.c_str())); w.bl.st = true; w.bl.sa = 1080;
+  s = sc_of(w, n, 2000, 60, ck);
+  for (int i = 0; i < s.n; i++) if (s.it[i].k == K_TEXT && s.it[i].y > 368 && s.it[i].y < 380) { printf("4 macs old: '%s' at %d\n", s.it[i].s, s.it[i].y); CHECK(false); }
+  CHECK(has_text(s, "UPDATED 18 MIN AGO"));
+  // age_text itself
+  char a[24];
+  sc::age_text(a, sizeof a, 12 * 60); CHECK(strcmp(a, "12 MIN") == 0);
+  sc::age_text(a, sizeof a, 2 * 3600 + 14 * 60); CHECK(strcmp(a, "2 H 14 MIN") == 0);
+  sc::age_text(a, sizeof a, 3 * 86400); CHECK(strcmp(a, "3 D") == 0);
+  sc::age_text(a, sizeof a, -1); CHECK(strcmp(a, "—") == 0);
+}
+
+// bug 4: alert text. Line 1 wraps to 2 lines on whole words; line 2 is the location from the data
+static void test_alert_text() {
+  Clock ck; ck.valid = true; ck.t = 1763063880;
+  Feed f = with(A_DISK96, nullptr, 0, 1000);
+  Nav v; on_long_press(v, f, 2000);
+  Scene s = sc_of(f, v, 2000, 60, ck);
+  CHECK(find_text(s, "disk1 96% full") && find_text(s, "Unraid · disk1") && !has_text(s, "Check it.") && !has_text(s, "Disk disk1"));
+  CHECK(has_text(s, "STORAGE · ACTIVE 1 MIN"));
+  // a long title wraps to two lines and ends on a whole word with the ellipsis; no line is cut mid-word
+  const char *title = "Cache pool is nearly out of space tonight again";
+  std::string a = std::string(R"({"k":"cache","tp":"sd","sv":"r","t":")") + title + R"(","w":"Unraid · cache pool","m":"x","a":5})";
+  Feed g = with(a.c_str(), nullptr, 0, 1000);
+  Nav v2; on_long_press(v2, g, 2000);
+  s = sc_of(g, v2, 2000, 60, ck);
+  int lines = 0; std::string last;
+  for (int i = 0; i < s.n; i++) if (s.it[i].k == K_TEXT && s.it[i].font == F40) { lines++; last = s.it[i].s; }
+  CHECK(lines >= 1 && lines <= 2);
+  for (int i = 0; i < s.n; i++) if (s.it[i].k == K_TEXT && s.it[i].font == F40) {
+    std::string ln = s.it[i].s;
+    if (ln.size() >= 3 && ln.compare(ln.size() - 3, 3, "…") == 0) ln.resize(ln.size() - 3);
+    size_t p = 0;
+    while (p < ln.size()) {   // every word on the line is a whole word of the title
+      size_t q = ln.find(' ', p); if (q == std::string::npos) q = ln.size();
+      std::string w = ln.substr(p, q - p);
+      if (!w.empty()) { std::string t = std::string(" ") + title + " "; CHECK(t.find(" " + w + " ") != std::string::npos); }
+      p = q + 1;
+    }
+  }
+  CHECK(last.size() >= 3 && last.compare(last.size() - 3, 3, "…") == 0);   // it was too long: ends with "…"
+  CHECK(find_text(s, "Unraid · cache pool"));
+  // line 2 is never a repeat of line 1
+  const Item *l2 = find_text(s, "Unraid · cache pool");
+  CHECK(l2 && !has_text(s, "Disk "));
+  // an older feed with only the message keeps working
+  Feed old = with(A_CACHE, nullptr, 0, 1000); Nav v3; on_long_press(v3, old, 2000);
+  s = sc_of(old, v3, 2000, 60, ck); CHECK(find_text(s, "Cache 93% full") && has_text(s, "The cache pool"));
+}
+
+// bug 5: same-kind alerts are one card with the names joined; the dots stop at 7
+static void test_alert_group() {
+  Clock ck; ck.valid = true; ck.t = 1763063880;
+  const char *g4 = R"({"k":"wan","tp":"nw","sv":"r","t":"No traffic on 4 links","w":"Cox · Starlink · Fiber · LTE","c":4,"u":"links","m":"","a":720})";
+  Feed f = with(g4, nullptr, 0, 1000);
+  CHECK(f.nal == 1 && f.al[0].c == 4 && strcmp(f.al[0].u, "links") == 0);
+  Nav v; on_long_press(v, f, 2000);
+  Scene s = sc_of(f, v, 2000, 60, ck);
+  CHECK(s.ring == C_BAD);
+  CHECK(has_text(s, "ALERT · 4 LINKS") && has_text(s, "No traffic on 4") && has_text(s, "Cox · Starlink"));
+  CHECK(has_text(s, "NETWORK · ACTIVE 12 MIN"));
+  CHECK(has_text(s, "1 OF 1"));
+  // snoozed as one card
+  on_long_press(v, f, 2100);
+  CHECK(visible_alerts(v, f, 2200) == 0);
+  // 12 alerts: counter alone (no dots), 6 alerts: 7 dots with the Done card
+  for (int n : {6, 7, 12}) {
+    Feed m = feed_with(3, n); Nav nv; on_feed(nv, m, 1000); on_long_press(nv, m, 2000);
+    Scene d = sc_of(m, nv, 2500, 60, ck);
+    int dots = 0; for (int i = 0; i < d.n; i++) if (d.it[i].k == K_RECT && d.it[i].h == 10) dots++;
+    CHECK(dots <= 7);
+    CHECK((n <= 6) == (dots > 0));
+  }
+}
+
+// bug 7: the car's software update lives inside the EV page
+static void test_ev_updating() {
+  Clock ck; ck.valid = true; ck.t = 1763063880;
+  std::string b = body("g", "", "", "");
+  size_t p = b.find("\"wk\":1}");
+  b.insert(p + 7 - 1, R"(,"up":{"p":64,"f":"2026.42","t":"2026.46"})");
+  Feed f = feed_json(b);
+  CHECK(f.ev.up && f.ev.upp == 64 && strcmp(f.ev.upf, "2026.42") == 0 && strcmp(f.ev.upt, "2026.46") == 0);
+  Nav n; n.topic = T_EV;
+  Scene s = sc_of(f, n, 2000, 60, ck);
+  bool bluepill = false;
+  for (int i = 0; i < s.ng; i++) if (s.g[i].pill && s.g[i].ph == 35 && s.g[i].pbg == P_BLUE) bluepill = true;
+  CHECK(has_text(s, "Updating 64%") && bluepill && has_text(s, "limit 80%") && find_text(s, "54") && s.key < 0xA0000000u);
+  bool dl = false; for (int i = 0; i < s.n; i++) if (s.it[i].k == K_ICON && s.it[i].icon == IC_DOWNLOAD) dl = true;
+  CHECK(dl && !has_text(s, "PANEL"));
+  for (int t = 0; t < T_COUNT; t++) {   // no other screen is taken over either
+    Nav o; o.topic = t; Scene x = sc_of(f, o, 2000, 60, ck); CHECK(x.key < 0xA0000000u && !has_text(x, "DON'T UNPLUG"));
+  }
+  n.detail = true; s = sc_of(f, n, 2000, 60, ck);
+  const Item *lab = find_text(s, "SOFTWARE UPDATE");
+  CHECK(lab && lab->font == F15 && lab->col == C_BLUE && find_text(s, "64% · 2026.42 → 2026.46") && !has_text(s, "RATE") && !has_text(s, "TO 80%") && has_text(s, "EV · RANGE"));
+  check_fit(s, "ev update detail");
+  // no percent known: still inside EV
+  Feed g = f; g.ev.upp = -1; n.detail = false; s = sc_of(g, n, 2000, 60, ck); CHECK(find_text(s, "Updating"));
+  // the panel's own update is a different screen
+  Scene sy; Sys y; y.mode = SYS_OTA; y.pct = 40; make_system(y, sy); CHECK(has_text(sy, "PANEL · UPDATING"));
+  pool_check(sc_of(f, n, 2000, 60, ck), "ev updating overview");
+  n.detail = true; pool_check(sc_of(f, n, 2000, 60, ck), "ev updating detail");
+}
+
+// Darkbloom: overview names centred and wrapping, detail with clusters
+static void test_darkbloom_v4() {
+  Clock ck; ck.valid = true; ck.t = 1763063880;
+  std::string m3 = R"({"n":"studio-m4-ultra","s":"serving","on":1,"td":1234,"tm":45600,"jobs":3,"ij":2,"cl":"alpha","age":12},{"n":"mini c","s":"serving","on":1,"td":300,"tm":9000,"jobs":0,"ij":1,"cl":"beta"},{"n":"laptop-b","s":"idle","on":1,"td":257,"tm":2395,"cl":"gamma"},{"n":"desk-d","s":"silent","on":0,"td":0,"tm":200,"age":10800,"cl":"gamma"})";
+  Feed f = feed_json(body("g", "", "", "", m3.c_str()));
+  Nav n;
+  Scene s = sc_of(f, n, 2000, 60, ck);
+  // overview: names centred (al 0 or a centred group), none cut
+  CHECK(find_text(s, "studio-m4-ultra") || has_text(s, "studio-m4"));
+  for (int i = 0; i < s.n; i++) if (s.it[i].k == K_TEXT && strstr(s.it[i].s, "..")) { printf("cut text '%s'\n", s.it[i].s); CHECK(false); }
+  // detail with 3 clusters: no title, blue DARKBLOOM label, cluster labels, TODAY, NOW
+  n.detail = true; s = sc_of(f, n, 2000, 60, ck);
+  CHECK(!has_text(s, "DARKBLOOM · MACS") && !has_text(s, "MODEL"));
+  const Item *dl = find_text(s, "DARKBLOOM");
+  CHECK(dl && dl->col == C_BLUE && dl->font == F15);
+  CHECK(has_text(s, "TODAY") && has_text(s, "ALPHA · 2 NOW") && has_text(s, "BETA") && has_text(s, "GAMMA"));
+  int bars = 0; for (int i = 0; i < s.n; i++) if (s.it[i].k == K_RECT && s.it[i].w == 3 && s.it[i].col == C_BLUE) bars++;
+  CHECK(bars == 3);
+  for (int i = 0; i < s.n; i++) if (s.it[i].k == K_TEXT && s.it[i].y > 368 && s.it[i].y < 380) { printf("3 clusters: '%s' at %d\n", s.it[i].s, s.it[i].y); CHECK(false); }
+  check_fit(s, "3 clusters"); pool_check(s, "3 clusters detail");
+  // 2 clusters keep the title and the grey MODEL label
+  std::string m2 = R"({"n":"a1","s":"serving","on":1,"td":1,"jobs":1,"ij":4,"cl":"alpha"},{"n":"b1","s":"serving","on":1,"td":2,"cl":"beta"})";
+  Feed g = feed_json(body("g", "", "", "", m2.c_str()));
+  snprintf(g.bl.md, sizeof g.bl.md, "gemma-3-27b");
+  s = sc_of(g, n, 2000, 60, ck);
+  const Item *ml = find_text(s, "MODEL");
+  CHECK(has_text(s, "DARKBLOOM · MACS") && ml && ml->col == C_LABEL && find_text(s, "gemma-3-27b") && has_text(s, "inference 4 · sandbox 1 now"));
+  pool_check(s, "2 clusters detail");
+  // no clusters: flat list, no bars
+  Feed h = green(); h.at_ms = 1000; s = sc_of(h, n, 2000, 60, ck);
+  bars = 0; for (int i = 0; i < s.n; i++) if (s.it[i].k == K_RECT && s.it[i].w == 3) bars++;
+  CHECK(bars == 0 && has_text(s, "DARKBLOOM · MACS"));
+}
+
+// Network: speeds from 1000 up read "1.2 G"; the name column takes the leftover width
+static void test_network_v4() {
+  char b[16];
+  sc::mbps(b, sizeof b, 999.0f); CHECK(strcmp(b, "999") == 0);
+  sc::mbps(b, sizeof b, 1000.0f); CHECK(strcmp(b, "1.0 G") == 0);
+  sc::mbps(b, sizeof b, 1234.5f); CHECK(strcmp(b, "1.2 G") == 0);
+  sc::mbps(b, sizeof b, -1.0f); CHECK(strcmp(b, "—") == 0);
+  Clock ck; ck.valid = true; ck.t = 1763063880;
+  Feed f = feed_with(3, 0);
+  f.nw.l[0].d = 1234.5f;
+  Nav n; n.topic = T_NW;
+  Scene s = sc_of(f, n, 2000, 60, ck); CHECK(find_text(s, "1.2 G"));
+  // detail: name box at least 108 wide and never cut with ".."
+  n.detail = true;
+  Feed w = links_feed(5);
+  snprintf(w.nw.l[0].n, sizeof w.nw.l[0].n, "Fiber-10G");
+  s = sc_of(w, n, 2000, 60, ck);
+  const Item *nm = find_text(s, "Fiber-10G"); CHECK(nm && nm->w >= 108);
+  // 6 or more links: 4 rows and "+N MORE" in the overview
+  Feed m = feed_with(7, 0); n.detail = false; s = sc_of(m, n, 2000, 60, ck); CHECK(has_text(s, "+3 MORE"));
+}
+
+// bug 8: the Lab never shows until the feed defines it
+static void test_lab_hidden() {
+  Clock ck; ck.valid = true; ck.t = 1763063880;
+  Feed f = green(); f.at_ms = 1000;
+  CHECK(!topic_on(f, T_LAB) && dot_count(f) == 5);
+  Nav n; n.topic = T_LAB; clamp(n, f);
+  CHECK(n.topic != T_LAB);
+  Scene s = sc_of(f, n, 2000, 60, ck); CHECK(!has_text(s, "LAB") || has_text(s, "BLOOM"));
+  for (int i = 0; i < 12; i++) { on_rotate(n, f, 1, 3000 + i); CHECK(n.topic != T_LAB); }
+  s = sc_of(f, Nav(), 2000, 60, ck); CHECK(!has_text(s, "LAB"));   // not even on the clock's topic cells
+}
+
 int main() {
   test_parse(); test_alert_parse(); test_nav(); test_gesture(); test_view_stepping(); test_alert_model(); test_scene(); test_states(); test_system(); test_brightness();
   test_links();
   test_alert_dots();
   test_net_detail();
+  test_ring_everywhere(); test_no_arc_without_value(); test_pill_timing(); test_alert_text(); test_alert_group(); test_ev_updating(); test_darkbloom_v4(); test_network_v4(); test_lab_hidden();
   test_pools();
   printf("%d checks, %d failed\n", checks, fails);
   return fails ? 1 : 0;

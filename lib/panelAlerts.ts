@@ -1,12 +1,15 @@
 // Priority alerts for the ESP32 panel. Pure: turns the finished feed sections into one short, ordered list that the
 // panel shows on every screen (badge) and in its alert view. The panel feed (lib/panelFeed.ts) puts it in "al".
 //
-// One alert = { k, tp, sv, m, a }:
+// One alert = { k, tp, sv, t, w, m, a, c?, u? }:
 //   k   stable key ("silent:m4", "cache", "usage:5h"). It does not change when a number inside the message changes, so the
 //       panel can tell a NEW alert from the same one moving, and can keep a snooze on it.
 //   tp  topic: "bl" Darkbloom, "nw" network, "sd" storage, "ev" EV, "us" Claude usage
 //   sv  "r" red (act now) or "a" amber (worth knowing; never interrupts the panel)
-//   m   the plain-language message, at most ALERT_MSG_MAX characters
+//   t   line 1 for the panel: what is wrong, short ("disk1 96% full"). The panel wraps it to 2 lines, never cuts a word
+//   w   line 2 for the panel: where, "device · part" ("Unraid · array disk"); for a group, the item names joined with " · "
+//   c/u only on a group card: how many items (c) and their noun (u, "links"), e.g. "No traffic on 4 links"
+//   m   the plain-language message, at most ALERT_MSG_MAX characters (kept for logs; the panel body drops it when short of room)
 //   a   seconds the alert has been active (see trackSince); the panel adds its own clock to it
 //
 // Order: red before amber, then topic (storage, Darkbloom, network, Claude usage, EV), then key. At most MAX_ALERTS are
@@ -17,11 +20,13 @@ import type { Section } from './panelFeed.ts';
 
 export const MAX_ALERTS = 12;
 export const ALERT_MSG_MAX = 90;
+export const ALERT_TITLE_MAX = 40;
+export const ALERT_WHERE_MAX = 64;
 export const CACHE_AMBER_PCT = 80;
 export const CACHE_RED_PCT = 90;
 
 export type AlertTopic = 'bl' | 'nw' | 'sd' | 'ev' | 'us';
-export interface Alert { k: string; tp: AlertTopic; sv: 'r' | 'a'; m: string; a?: number }
+export interface Alert { k: string; tp: AlertTopic; sv: 'r' | 'a'; t: string; w: string; m?: string; a?: number; c?: number; u?: string }
 
 export interface AlertConfig {
   cacheWarn: number; cacheRed: number;     // cache pool percent full
@@ -87,13 +92,24 @@ interface UsageWin { p?: number; r?: number }
 
 export function collectAlerts(sec: Sections, cfg: AlertConfig = DEFAULT_ALERT_CONFIG): Alert[] {
   const out: Alert[] = [];
-  const add = (k: string, tp: AlertTopic, sv: 'r' | 'a', m: string) => out.push({ k, tp, sv, m: m.slice(0, ALERT_MSG_MAX) });
+  const groups = new Map<string, { al: Alert; items: string[] }>();
+  const clip = (x: string, n: number) => (x.length <= n ? x : `${x.slice(0, n - 1).replace(/\s+\S*$/, '').trimEnd() || x.slice(0, n - 1)}…`);
+  const add = (k: string, tp: AlertTopic, sv: 'r' | 'a', m: string, t: string, w: string) =>
+    out.push({ k, tp, sv, t: clip(t, ALERT_TITLE_MAX), w: clip(w, ALERT_WHERE_MAX), m: m.slice(0, ALERT_MSG_MAX) });
+  // Same kind + same topic + same severity = one card. Members are added with grp(); groupAlerts() below merges the ones that repeat.
+  const grp = (kind: string, item: string, tp: AlertTopic, sv: 'r' | 'a', m: string, t: string, w: string) => {
+    add(`${kind}:${item}`, tp, sv, m, t, w);
+    const id = `${kind}/${sv}`;
+    const g = groups.get(id) ?? { al: out[out.length - 1], items: [] };
+    g.items.push(item);
+    groups.set(id, g);
+  };
 
   // ---- Darkbloom
   const bl = sec.bl as Section & { m?: { n: string; sl?: number }[]; al?: number };
   let silent = 0;
-  for (const m of bl.m ?? []) if (m.sl) { silent++; add(`silent:${m.n}`, 'bl', 'r', `${m.n} has stopped serving Darkbloom (no activity for over 30 min).`); }
-  if (bl.ok && (bl.al ?? 0) > 0 && !silent) add('bloom', 'bl', 'a', `${plural(bl.al!, 'open alert')} in the Darkbloom ledger.`);
+  for (const m of bl.m ?? []) if (m.sl) { silent++; grp('silent', m.n, 'bl', 'r', `${m.n} has stopped serving Darkbloom (no activity for over 30 min).`, `${m.n} not serving`, 'Darkbloom · silent 30+ min'); }
+  if (bl.ok && (bl.al ?? 0) > 0 && !silent) add('bloom', 'bl', 'a', `${plural(bl.al!, 'open alert')} in the Darkbloom ledger.`, plural(bl.al!, 'open alert'), 'Darkbloom · ledger');
 
   // ---- Storage
   const sd = sec.sd as Section & {
@@ -101,34 +117,41 @@ export function collectAlerts(sec: Sections, cfg: AlertConfig = DEFAULT_ALERT_CO
     d?: { n: string; r?: string; u?: number }[];
   };
   if (sd.ok) {
-    if (sd.arr && sd.arr.toUpperCase() !== 'STARTED') add('array', 'sd', 'r', `The Unraid array is ${sd.arr}. Files may be unavailable.`);
-    if ((sd.pe ?? 0) > 0) add('parity', 'sd', 'r', `Parity found ${plural(sd.pe!, 'error')}. Check the array in Unraid.`);
+    if (sd.arr && sd.arr.toUpperCase() !== 'STARTED') add('array', 'sd', 'r', `The Unraid array is ${sd.arr}. Files may be unavailable.`, `Array ${sd.arr.toLowerCase()}`, 'Unraid · array');
+    if ((sd.pe ?? 0) > 0) add('parity', 'sd', 'r', `Parity found ${plural(sd.pe!, 'error')}. Check the array in Unraid.`, `Parity: ${plural(sd.pe!, 'error')}`, 'Unraid · parity check');
     const cache = (sd.d ?? []).find((d) => d.r === 'c' && d.u !== undefined);
-    if (cache && (cache.u ?? 0) >= cfg.cacheRed) add('cache', 'sd', 'r', `Cache pool is ${cache.u}% full. Run the mover or free space.`);
-    else if (cache && (cache.u ?? 0) >= cfg.cacheWarn) add('cache', 'sd', 'a', `Cache pool is ${cache.u}% full.`);
-    if ((sd.na ?? 0) > 0) add('unraid', 'sd', 'r', `${plural(sd.na!, 'unread Unraid alert')}. Read them in Unraid.`);
-    else if ((sd.nwn ?? 0) > 0) add('unraid', 'sd', 'a', `${plural(sd.nwn!, 'unread Unraid warning')}.`);
+    if (cache && (cache.u ?? 0) >= cfg.cacheRed) add('cache', 'sd', 'r', `Cache pool is ${cache.u}% full. Run the mover or free space.`, `Cache ${cache.u}% full`, 'Unraid · cache pool');
+    else if (cache && (cache.u ?? 0) >= cfg.cacheWarn) add('cache', 'sd', 'a', `Cache pool is ${cache.u}% full.`, `Cache ${cache.u}% full`, 'Unraid · cache pool');
+    if ((sd.na ?? 0) > 0) add('unraid', 'sd', 'r', `${plural(sd.na!, 'unread Unraid alert')}. Read them in Unraid.`, plural(sd.na!, 'unread alert'), 'Unraid · notifications');
+    else if ((sd.nwn ?? 0) > 0) add('unraid', 'sd', 'a', `${plural(sd.nwn!, 'unread Unraid warning')}.`, plural(sd.nwn!, 'unread warning'), 'Unraid · notifications');
     const ts = sd.tot?.s ?? 0, tu = sd.tot?.u ?? 0;
     if (ts > 0) {
       const p = Math.round((tu / ts) * 100);
       const msg = `The array is ${p}% full (${tb(tu)} of ${tb(ts)}).`;
-      if (p >= cfg.arrayRed) add('arrayfull', 'sd', 'r', msg);
-      else if (p >= cfg.arrayWarn) add('arrayfull', 'sd', 'a', msg);
+      const at = `${tb(tu)} of ${tb(ts)} · array`;
+      if (p >= cfg.arrayRed) add('arrayfull', 'sd', 'r', msg, `Array ${p}% full`, at);
+      else if (p >= cfg.arrayWarn) add('arrayfull', 'sd', 'a', msg, `Array ${p}% full`, at);
     }
-    const full = (sd.d ?? []).filter((d) => d.r !== 'c' && d.r !== 'p' && (d.u ?? 0) >= cfg.diskWarn).sort((a, b) => (b.u ?? 0) - (a.u ?? 0))[0];
-    if (full) add('full', 'sd', 'a', `Disk ${full.n} is ${full.u}% full.`);
+    const fulls = (sd.d ?? []).filter((d) => d.r !== 'c' && d.r !== 'p' && (d.u ?? 0) >= cfg.diskWarn).sort((a, b) => (b.u ?? 0) - (a.u ?? 0));
+    for (const full of fulls) grp('full', full.n, 'sd', 'a', `Disk ${full.n} is ${full.u}% full.`, `${full.n} ${full.u}% full`, 'Unraid · array disk');
   }
 
   // ---- Network
   const nw = sec.nw as Section & { src?: string; l?: { n?: string; d?: number; u?: number; t1?: number[]; t7?: number[]; t30?: number[] }[] };
   const links = nw.l ?? [];
   const idle = (l: { d?: number; u?: number }) => (l.d ?? 0) < 0.01 && (l.u ?? 0) < 0.01;
-  if (nw.ok && nw.src === 'wan' && links.length && links.every(idle)) add('wan', 'nw', 'a', 'No traffic on any internet link. The internet may be down.');
+  // Every internet link silent = the internet is down: red. Unraid's own interface is not an internet link.
+  const wans = links.filter((l) => (l.n ?? '').toLowerCase() !== 'unraid');
+  if (nw.ok && nw.src === 'wan' && wans.length && wans.every(idle)) {
+    add('wan', 'nw', 'r', 'No traffic on any internet link. The internet may be down.',
+      wans.length === 1 ? `No traffic on ${wans[0].n}` : `No traffic on ${wans.length} links`, wans.map((l) => l.n ?? '?').join(' · '));
+    out[out.length - 1].c = wans.length; out[out.length - 1].u = 'links';
+  }
   if (nw.ok && nw.src === 'wan' && cfg.primaryWan) {
     const want = cfg.primaryWan.toLowerCase();
     const primary = links.find((l) => (l.n ?? '').toLowerCase() === want);
     const other = links.find((l) => l !== primary && (l.n ?? '').toLowerCase() !== 'unraid' && (l.d ?? 0) + (l.u ?? 0) >= 1);
-    if (primary && idle(primary) && other) add('failover', 'nw', 'a', `${primary.n} looks down. Traffic is on ${other.n}.`);
+    if (primary && idle(primary) && other) add('failover', 'nw', 'a', `${primary.n} looks down. Traffic is on ${other.n}.`, `${primary.n} looks down`, `Traffic is on ${other.n}`);
   }
   if (nw.ok && cfg.capGb) {
     const want = cfg.capLink?.toLowerCase();
@@ -139,8 +162,9 @@ export function collectAlerts(sec: Sections, cfg: AlertConfig = DEFAULT_ALERT_CO
       const p = Math.round((used / cfg.capGb) * 100);
       const name = cfg.capLink ?? 'Internet';
       const msg = `${name} used ${tb(used)} of its ${tb(cfg.capGb)} data cap (${p}%, last 30 days).`;
-      if (p >= cfg.capRed) add('cap', 'nw', 'r', msg);
-      else if (p >= cfg.capWarn) add('cap', 'nw', 'a', msg);
+      const at = `${tb(used)} of ${tb(cfg.capGb)} · 30 days`;
+      if (p >= cfg.capRed) add('cap', 'nw', 'r', msg, `${name} data cap ${p}%`, at);
+      else if (p >= cfg.capWarn) add('cap', 'nw', 'a', msg, `${name} data cap ${p}%`, at);
     }
   }
 
@@ -151,8 +175,9 @@ export function collectAlerts(sec: Sections, cfg: AlertConfig = DEFAULT_ALERT_CO
       if (!w || w.p === undefined) return;
       const reset = w.r !== undefined ? ` Resets in ${durText(w.r)}.` : '';
       const msg = `Claude ${label} usage is ${w.p}%.${reset}`;
-      if (w.p >= cfg.usageRed) add(k, 'us', 'r', msg);
-      else if (w.p >= cfg.usageWarn) add(k, 'us', 'a', msg);
+      const t = `Claude ${label} ${w.p}%`, at = w.r !== undefined ? `Resets in ${durText(w.r)}` : 'Claude usage';
+      if (w.p >= cfg.usageRed) add(k, 'us', 'r', msg, t, at);
+      else if (w.p >= cfg.usageWarn) add(k, 'us', 'a', msg, t, at);
     };
     win('usage:5h', '5-hour', us.h5);
     win('usage:wk', 'weekly', us.wk);
@@ -160,9 +185,29 @@ export function collectAlerts(sec: Sections, cfg: AlertConfig = DEFAULT_ALERT_CO
   }
 
   // ---- EV
-  if ((sec.ev as Section & { sf?: number }).sf) add('ev', 'ev', 'a', "Tonight's charge will fall short of the target.");
+  if ((sec.ev as Section & { sf?: number }).sf) add('ev', 'ev', 'a', "Tonight's charge will fall short of the target.", 'Charge will fall short', 'Tonight · EV plan');
 
-  return sortAlerts(out);
+  return sortAlerts(groupAlerts(out, groups));
+}
+
+const KIND_NOUN: Record<string, [string, string]> = { silent: ['Mac', 'stopped'], full: ['disk', 'full'] };
+
+/** Two or more alerts of one kind, topic and severity become one card ("3 disks full"), snoozed together. */
+function groupAlerts(list: Alert[], groups: Map<string, { al: Alert; items: string[] }>): Alert[] {
+  let out = list;
+  for (const [id, g] of groups) {
+    if (g.items.length < 2) continue;
+    const kind = id.split('/')[0];
+    const [noun, verb] = KIND_NOUN[kind] ?? ['item', 'affected'];
+    const first = g.al;
+    const members = new Set(list.filter((x) => x.k.startsWith(`${kind}:`) && x.sv === first.sv).map((x) => x.k));
+    const merged: Alert = {
+      k: `${kind}:*`, tp: first.tp, sv: first.sv, t: `${g.items.length} ${noun}s ${verb}`, w: g.items.join(' · ').slice(0, ALERT_WHERE_MAX),
+      m: `${g.items.length} ${noun}s ${verb}: ${g.items.join(', ')}.`.slice(0, ALERT_MSG_MAX), c: g.items.length, u: `${noun}s`,
+    };
+    out = [...out.filter((x) => !members.has(x.k)), merged];
+  }
+  return out;
 }
 
 export function sortAlerts(list: Alert[]): Alert[] {
