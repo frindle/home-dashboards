@@ -271,6 +271,50 @@ test('liveNeed: measured work days floor the curve when the drive log misses dri
   assert.equal(workDayMean(buildNeedData(rows, drives, []), date(56)), null);
 });
 
+test('work-day need counts only work days the car drove to work', () => {
+  // Days 2 and 5 drove to work (~18%); day 4 is a work day with no drive (1%), day 6 a work day of
+  // home -> home errands (6%): neither is a commute, so neither drags the work-day need down.
+  const rows = [row(0, 1), row(1, 1.5), row(2, 18), row(3, 1), row(4, 1, { drives: 0, miles: 0 }), row(5, 19), row(6, 6, { drives: 1, miles: 8 })];
+  const work = [date(2), date(4), date(5), date(6), date(7)];
+  const loop: DriveIn = { ...drive(6, 8, 5, 55), at_home: true, end_at_home: true };
+  const data = buildNeedData(rows, [loop], work);
+  const wt = (i: number) => 0.5 ** ((7 - i) / 30);
+  const want = (wt(2) * 18 + wt(5) * 19) / (wt(2) + wt(5));
+  assert.ok(Math.abs(workDayMean(data, date(7))! - want) < 1e-9);
+  assert.equal(liveNeed(rows, [loop], work, date(7), [55])!.work, workDayMean(data, date(7)));
+  // ewmaNeed's work kind: five work days that drove plus no-drive work days that would pull it down
+  const rows2: DailyUse[] = [], work2: string[] = [];
+  for (let i = 0; i < 10; i++) { rows2.push(i % 2 ? row(i, 1, { drives: 0, miles: 0 }) : row(i, 18)); work2.push(date(i)); }
+  const e = ewmaNeed(buildNeedData(rows2, [], work2), date(10), true)!;
+  assert.equal(e.source, 'kind');
+  assert.ok(Math.abs(e.pct - 18) < 1e-9);
+});
+
+test('tempNeed: a work day logged one way gets its lost leg back', () => {
+  const build = (legs: 'out' | 'both' | 'none') => {
+    const rows: DailyUse[] = [], work: string[] = [], drives: DriveIn[] = [];
+    for (let i = 0; i < 30; i++) {
+      const t = 70 + (i % 8);
+      work.push(date(i));
+      if (legs === 'both') {
+        rows.push(row(i, 16, { miles: 48, parked_pct: 2 }));
+        drives.push({ ...drive(i, 24, 8, t), at_home: true, end_at_home: false }, { ...drive(i, 24, 8, t), at_home: false, end_at_home: true });
+      } else {
+        rows.push(row(i, 8, { miles: 24, parked_pct: 2 }));   // the return leg never reached the log
+        drives.push(legs === 'out' ? { ...drive(i, 24, 8, t), at_home: true, end_at_home: false } : drive(i, 24, 8, t));
+      }
+    }
+    const data = buildNeedData(rows, drives, work);
+    const curve = fitTempCurve(data, date(30))!;
+    const need = tempNeed(data, date(30), curve)!;
+    return need.pct - 2;   // drive share, % (parked median is 2)
+  };
+  const v = 3;   // 24 mi per 8% in every fixture
+  assert.ok(Math.abs(build('both') - 48 / v) < 0.1);
+  assert.ok(Math.abs(build('out') - 48 / v) < 0.1);    // 24 logged + the 24 mi return put back
+  assert.ok(Math.abs(build('none') - 24 / v) < 0.1);   // no home flags: nothing to go on, as before
+});
+
 test('offDayNeed: mean of recent days off without outliers, work days and old days ignored', () => {
   const rows: DailyUse[] = [], work: string[] = [];
   for (let i = 0; i < 140; i++) {
