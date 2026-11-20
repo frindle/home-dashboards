@@ -28,6 +28,8 @@ export interface BuildInput {
   // EV plan #7: expected use in % from the daily-use log (lib/needModels.ts
   // liveNeed). A null kind falls back to the charge-history estimate.
   useOverride?: { work: number | null; off: number | null } | null;
+  // The drive to work and back in % (lib/commuteFloor.ts): a work day never plans below it.
+  workFloorPct?: number | null;
   // Rev 18: room under the day peak for the serve day and the two after it (lib/peakForecast.ts).
   peakNights?: PeakNightIn[] | null;
   // Days with a typed need (/charging, /trips, the calendar), as the day's total driving in % of
@@ -45,7 +47,7 @@ export interface BuiltPlan {
   leftPct: number;              // what is left of today's use (no margin)
   usePctWork: number;
   usePctOff: number;
-  needSource: { work: 'daily-use' | 'charge-history'; off: 'daily-use' | 'charge-history' };
+  needSource: { work: 'daily-use' | 'charge-history' | 'commute'; off: 'daily-use' | 'charge-history' };
   result: TonightResult;
 }
 
@@ -113,11 +115,14 @@ export function buildRivianPlan(p: BuildInput): BuiltPlan | null {
   const est = p.est;
   const hist = (isWork: boolean): number | null => (est ? plannedFor(est, isWork) / p.kwhPerPct : null);
   const ow = p.useOverride?.work, oo = p.useOverride?.off;
-  const usePctWork = typeof ow === 'number' && Number.isFinite(ow) ? ow : hist(true);
+  const baseWork = typeof ow === 'number' && Number.isFinite(ow) ? ow : hist(true);
+  const fw = typeof p.workFloorPct === 'number' && Number.isFinite(p.workFloorPct) && p.workFloorPct > 0 ? p.workFloorPct : null;
+  const floorWins = fw !== null && (baseWork === null || fw > baseWork);
+  const usePctWork = floorWins ? fw : baseWork;
   const usePctOff = typeof oo === 'number' && Number.isFinite(oo) ? oo : hist(false);
   if (usePctWork === null || usePctOff === null) return null;
   const needSource = {
-    work: usePctWork === ow ? 'daily-use' as const : 'charge-history' as const,
+    work: floorWins ? 'commute' as const : usePctWork === ow ? 'daily-use' as const : 'charge-history' as const,
     off: usePctOff === oo ? 'daily-use' as const : 'charge-history' as const,
   };
   const serveDay = nextUseDay(p.nowMs);

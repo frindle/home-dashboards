@@ -13,9 +13,8 @@ import { overridePlan, validOverride, OVERRIDE_MIN_PCT, type ChargeOverride } fr
 import { influxTarget, writeLines } from '@/lib/chargeSessionInflux';
 import type { Alert } from '@/lib/planAlerts';
 import { packKwhFor, RIVIAN_PACK_KWH_DEFAULT } from '@/lib/packKwh';
-import { getShiftCalendar } from '@/lib/shiftCalendar';
 import { driveCellSalt, readDrives } from '@/lib/driveLogStore';
-import { placeEvent, WORK_KEY, searchPlaces } from '@/lib/geocode';
+import { placeEvent } from '@/lib/geocode';
 import type { LatLon } from '@/lib/ics';
 import { eventsWithin, getPersonalEvents, personalCalendarOn, TRIP_DAYS_AHEAD, type PersonalEvent } from '@/lib/personalCalendar';
 import { EV_WINDOW } from '@/lib/rivianSchedule';
@@ -24,7 +23,8 @@ import { tripAlerts, type TripSummary } from '@/lib/tripAlerts';
 import { tripPlanLine } from '@/lib/tripInflux';
 import { adjustForTrip, ALL_DAY_START_HOUR, awayDays, manualAdjust, pctForMiles, planTripDay, type Adjusted, type RouteFn, type TripDay, type TripEvent } from '@/lib/tripPlan';
 import { mutateTripChoices, readGeoOverrides, readTripChoices, type ManualNeed } from '@/lib/tripStore';
-import { cellOf, fileRouteCache, legTraffic, readTrafficProfile, routeLeg } from '@/lib/valhalla';
+import { cellOf, legTraffic, readTrafficProfile, routeLeg } from '@/lib/valhalla';
+import { placeWork, routeCache } from '@/lib/workPlace';
 
 export interface EventView {
   uid: string;
@@ -68,18 +68,6 @@ async function highFor(day: number, nowMs: number): Promise<number | null> {
   const highF = (await fetchForecast(day))?.highF ?? null;
   highCache.set(day, { highF, atMs: nowMs });
   return highF;
-}
-
-const routeCache = fileRouteCache();
-
-async function placeWork(nowMs: number): Promise<LatLon | null> {
-  const picked = (await readGeoOverrides())[WORK_KEY];
-  if (picked) return picked;
-  const wp = (await getShiftCalendar(nowMs))?.workPlace ?? null;
-  if (!wp) return null;
-  if (wp.geo) return wp.geo;
-  const [h] = wp.location ? await searchPlaces(wp.location, process.env, undefined, 1, nowMs) : [];
-  return h ? { lat: h.lat, lon: h.lon } : null;
 }
 
 // Everything the planner and the /trips page show, for the next 7 days.
@@ -126,9 +114,12 @@ export async function computeTrips(run: RivianPlanRun, nowMs: number, opts: { re
     const kwhPerPct = run.kwhPerPct > 0 ? run.kwhPerPct : 1.44;
     // The same expected use the night plan uses: the daily-use need (#7) when it
     // has one for this kind of day, else the charge history, else 20% / 10%.
+    // A work day never plans below the drive to work and back (lib/commuteFloor.ts).
     const n7 = isWork ? run.need7?.work : run.need7?.off;
-    const baseNeedPct = typeof n7 === 'number' && Number.isFinite(n7) ? n7
+    const base = typeof n7 === 'number' && Number.isFinite(n7) ? n7
       : run.est ? plannedFor(run.est, isWork) / kwhPerPct : (isWork ? 20 : 10);
+    const floor = isWork ? run.commuteFloor?.pct ?? 0 : 0;
+    const baseNeedPct = Math.max(base, floor);
     let plan: TripDay | null = null;
     let adj: Adjusted | null = null;
     let highF: number | null = null;

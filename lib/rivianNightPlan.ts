@@ -13,6 +13,7 @@ import { readDailyUse, readDrives, readDriveState } from '@/lib/driveLogStore';
 import { MAX_DRIVE_GAP_MS } from '@/lib/rivianDriveLog';
 import type { CarChargeRecord } from '@/lib/rivianChargeLog';
 import { liveNeed, type LiveNeed } from '@/lib/needModels';
+import { flooredNeed, type CommuteFloor } from '@/lib/commuteFloor';
 import { localDate } from '@/lib/rivianDailyUse';
 import { KWH_PER_PCT_SEED, kwhPerPctRows, measuredKwhPerPct } from '@/lib/kwhPerPct';
 import { readCarChargeHistory } from '@/lib/rivianChargeRunner';
@@ -23,6 +24,7 @@ import { buildRivianPlan, drivenTodayPct, driveTimeTemps, forecastHighFor, forec
 import { needUsePct } from '@/lib/tripPlan';
 import { readTripChoices } from '@/lib/tripStore';
 import { loadPeakDays, peakNightsFor } from '@/lib/peakData';
+import { commuteFloorNow } from '@/lib/workPlace';
 import { pacificFields } from '@/lib/pacificTime';
 import type { PeakNightIn } from '@/lib/peakPlan';
 
@@ -158,7 +160,8 @@ export interface RivianPlanRun {
   calendar: { workDays: Set<number>; shifts: Shift[] } | null;   // as read, before ignored shifts (for Influx)
   kwhPerPct: number;
   forecastHighF: number | null;
-  need7: LiveNeed | null;   // the daily-use need (EV plan #7); null = charge history planned it
+  need7: LiveNeed | null;   // the daily-use need (EV plan #7), commute floor applied; null = charge history planned it
+  commuteFloor: CommuteFloor | null;  // the drive to work and back (lib/commuteFloor.ts); null = work or the trip unknown
   peakNights: PeakNightIn[] | null;   // Rev 18: room under the day peak, serve day + 2; null = off
   typedUse: Record<number, number>;   // typed needs as expected use in % (no margin), by day
   houseSince: string | null;          // first day of the charge log (for the night forecast)
@@ -204,7 +207,7 @@ export async function serveNightForecast(
 export function dailyNeedKwhOf(run: RivianPlanRun): number | null {
   const b = run.built;
   const typed = b ? run.typedUse[b.serveDay] ?? 0 : 0;
-  if (b && run.need7) return Math.max(run.workDays?.has(b.serveDay) ? b.usePctWork : b.usePctOff, typed) * run.kwhPerPct;
+  if (b && (run.need7 || (b.needSource.work === 'commute' && run.workDays?.has(b.serveDay)))) return Math.max(run.workDays?.has(b.serveDay) ? b.usePctWork : b.usePctOff, typed) * run.kwhPerPct;
   const planned = run.est?.plannedKwh ?? null;
   return planned === null ? (typed > 0 ? typed * run.kwhPerPct : null) : Math.max(planned, typed * run.kwhPerPct);
 }
@@ -235,15 +238,18 @@ export async function rivianNightPlan(
   const state = await readRivianCachedState();
   const floor = arrivalFloorOf(v);
   const forecastHighF = opts.forecastHighF ?? null;
-  const need7 = await needFromDailyUse(nowMs, shifts, workDays, opts.forecastTemps ?? []);
+  const needRaw = await needFromDailyUse(nowMs, shifts, workDays, opts.forecastTemps ?? []);
+  const commuteFloor = await commuteFloorNow(nowMs, forecastHighF);
+  const need7 = flooredNeed(needRaw, commuteFloor);
   const peakNights = await peakNightsNow(nowMs, workDays, forecastHighF, opts.forecastTemps ?? [], houseSince);
   const typedUse = await typedUseOf(nowMs, nextUseDay(nowMs), forecastHighF, opts.forecastTemps ?? []);
   const driven = await drivenNow(nowMs, state, carCharges);
   const built = buildRivianPlan({
     nowMs, est, shifts, workDays, state, kwhPerPct, floorPct: floor.arrivalFloorPct, margin: floor.arrivalDriveMargin,
     forecastHighF, minAmps: RIVIAN_MIN_AMPS, maxAmps: RIVIAN_MAX_AMPS,
-    useOverride: need7 ? { work: need7.work, off: need7.off } : null,
+    useOverride: needRaw ? { work: needRaw.work, off: needRaw.off } : null,
+    workFloorPct: commuteFloor?.pct ?? null,
     peakNights, typedUse, drivenPct: driven.pct,
   });
-  return { built, est, state, shifts, workDays, timeOffDays: cal?.timeOffDays ?? new Set(), calendar: cal ? { workDays: cal.workDays, shifts: cal.shifts } : null, kwhPerPct, forecastHighF, need7, peakNights, typedUse, houseSince, midDrive: driven.midDrive, openDrive: driven.open };
+  return { built, est, state, shifts, workDays, timeOffDays: cal?.timeOffDays ?? new Set(), calendar: cal ? { workDays: cal.workDays, shifts: cal.shifts } : null, kwhPerPct, forecastHighF, need7, commuteFloor, peakNights, typedUse, houseSince, midDrive: driven.midDrive, openDrive: driven.open };
 }
