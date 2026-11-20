@@ -1,5 +1,6 @@
 import { version } from '@/package.json';
 import { readFileSync } from 'fs';
+import { onlyNonImageFiles } from '@/lib/buildInputs';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,6 +30,20 @@ export async function GET() {
     const data = await res.json() as { sha?: string; commit?: { committer?: { date?: string } } };
     const latest = (data.sha ?? '').slice(0, 7) || null;
     let outdated = current !== 'unknown' && latest !== null && current !== latest && !latest.startsWith(current);
+    if (outdated) {
+      // update.sh skips the build when a deploy only brought files that never
+      // reach the image (docs, tests, firmware, CI). Those commits are not an update.
+      try {
+        const cmp = await fetch(`https://api.github.com/repos/frindle/ev-dashboard/compare/${current}...main?per_page=1`, {
+          headers: { 'User-Agent': 'ev-dashboard', Accept: 'application/vnd.github+json' },
+          next: { revalidate: 300 },
+        });
+        if (cmp.ok) {
+          const d = await cmp.json() as { files?: { filename?: string }[] };
+          if (onlyNonImageFiles(d.files)) outdated = false;
+        }
+      } catch { /* keep "outdated" */ }
+    }
     if (current === 'unknown' && latest !== null) {
       try {
         const builtAt = Date.parse(readFileSync(process.cwd() + '/.build-time', 'utf8').trim());

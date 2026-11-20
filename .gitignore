@@ -13,3 +13,6 @@ notes.md
 PI-SETUP-TOMORROW.md
 graphify-out/
 tsconfig.tsbuildinfo
+
+# update.sh: commit the image was last built from
+.last-built-sha
