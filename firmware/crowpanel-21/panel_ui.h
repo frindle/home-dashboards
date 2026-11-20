@@ -9,7 +9,7 @@
 
 namespace panel {
 
-constexpr int UI_ARCS = 4, UI_RECTS = 72, UI_LINES = 32, UI_LABELS = 44, UI_PTS = 72;
+constexpr int UI_PTS = 72;   // UI_ARCS / UI_RECTS / UI_LINES / UI_LABELS live in panel_scene.h
 
 struct Ui {
   const lv_font_t *font[4] = {nullptr, nullptr, nullptr, nullptr};   // F96, F40, F22, F15

@@ -45,6 +45,9 @@ struct Group {
 };
 
 constexpr int MAXI = 128, MAXG = 16;
+// LVGL object pools used by panel_ui.h (created once). Items past a pool are silently dropped, so every scene must fit:
+// the host tests check it with pool_use().
+constexpr int UI_ARCS = 4, UI_RECTS = 72, UI_LINES = 32, UI_LABELS = 44;
 struct Scene {
   Item it[MAXI];
   int n = 0;
@@ -55,6 +58,26 @@ struct Scene {
   uint32_t key = 0;    // changes when the screen is a different page (the UI fades through black)
   bool night = false;
 };
+
+// How many pooled LVGL objects panel_ui.h needs for a scene: arcs, rects (group pills count), lines (icon strokes and
+// limit ticks), labels. Must stay in step with ui::draw().
+struct PoolUse { int arcs = 0, rects = 0, lines = 0, labels = 0; };
+inline PoolUse pool_use(const Scene &s) {
+  PoolUse p;
+  int gcnt[MAXG] = {0};
+  for (int i = 0; i < s.n; i++) if (s.it[i].grp && s.it[i].grp <= s.ng) gcnt[s.it[i].grp - 1]++;
+  for (int g = 0; g < s.ng; g++) if (s.g[g].pill && gcnt[g] > 0) p.rects++;
+  for (int i = 0; i < s.n; i++) {
+    const Item &t = s.it[i];
+    switch (t.k) {
+      case K_RECT: p.rects++; break;
+      case K_ARC: if (t.rnd == 2) p.lines++; else p.arcs++; break;
+      case K_ICON: if (ICONS[t.icon].d) p.lines += ICONS[t.icon].d[0]; break;
+      case K_TEXT: p.labels++; break;
+    }
+  }
+  return p;
+}
 
 struct Clock { bool valid = false; time_t t = 0; };   // t: seconds since 1970; local time via localtime_r
 
@@ -693,12 +716,24 @@ inline void bl_detail(B &b, const Feed &f) {
   }
 }
 
+// Data used by one link in one period (GB down + up; 0 when the period has no totals). Same idea as the overview's
+// traffic() (down + up), but for the period's totals instead of the live speed.
+inline float used_in(const Link &l, int p) { return l.has_t[p] ? (l.t[p][0] > 0 ? l.t[p][0] : 0) + (l.t[p][1] > 0 ? l.t[p][1] : 0) : 0; }
+
+// Network detail. Links are sorted by data used in THIS period (most first, ties keep feed order). Up to 7 links show
+// all 7 rows; 8 or more show the 6 biggest and "+N MORE" (the real count) in the 7th row's place.
 inline void nw_detail(B &b, const Feed &f, int period) {
   const auto &w = f.nw;
   static const char *pn[] = {"Last 24 h", "Last 7 days", "Last 30 days"};
   static const char *pc[] = {"Today", "7 days", "30 days"};
+  int idx[MAX_LINKS];
+  for (int i = 0; i < w.n; i++) idx[i] = i;
+  for (int i = 1; i < w.n; i++)
+    for (int j = i; j > 0 && used_in(w.l[idx[j]], period) > used_in(w.l[idx[j - 1]], period); j--) { int t = idx[j]; idx[j] = idx[j - 1]; idx[j - 1] = t; }
   bool many = w.n >= 4;              // 4 or more links: the big title becomes a small label and the rows tighten
-  int n = w.n > 7 ? 7 : w.n;         // 7 rows is all that fits inside the circle
+  int more = w.n > 7 ? w.n - 6 : 0;  // 7 rows is all that fit inside the circle
+  int shown = more ? 6 : w.n;
+  int n = more ? 7 : w.n;            // rows drawn, the "+N MORE" row included
   float gap = !many ? 10 : (n <= 5 ? 6 : 2);
   float head = many ? 22 : 28;       // column heads plus the space under them
   Stack s;
@@ -720,8 +755,8 @@ inline void nw_detail(B &b, const Feed &f, int period) {
   float y = s.y[grid];
   b.text("DOWN", F15, C_LABEL, 295, y + BASE15, 2, 100, 2);
   b.text("UP", F15, C_LABEL, 403, y + BASE15, 2, 100, 2);
-  for (int i = 0; i < n; i++) {
-    const Link &l = w.l[i];
+  for (int i = 0; i < shown; i++) {
+    const Link &l = w.l[idx[i]];
     float ry = y + 18 + (many ? 4 : 10) + i * (26.8f + gap);
     char d[16], u[16];
     data_gb(d, sizeof d, l.t[period][0], l.has_t[period]);
@@ -729,6 +764,12 @@ inline void nw_detail(B &b, const Feed &f, int period) {
     b.text(l.n, F22, C_WHITE, 77, ry + BASE22, 1, 108);
     b.text(d, F22, C_WHITE, 295, ry + BASE22, 2, 100);
     b.text(u, F22, C_LABEL, 403, ry + BASE22, 2, 100);
+  }
+  if (more) {
+    char t[16];
+    snprintf(t, sizeof t, "+%d MORE", more);
+    float ry = y + 18 + 4 + 6 * (26.8f + gap);
+    b.text(t, F15, C_LABEL, 240, ry + (26.8f - 18.3f) / 2 + BASE15, 0, 380, 2);
   }
   if (total_at >= 0) {
     char t[32], nm[14], tot[16];
