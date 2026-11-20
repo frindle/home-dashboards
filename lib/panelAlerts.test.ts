@@ -117,9 +117,9 @@ test('since-time: starts at first sight, survives rebuilds, resets when the aler
 });
 
 test('cap: most important kept, true count reported', () => {
-  const many = Array.from({ length: 9 }, (_, i): Alert => ({ k: `k${i}`, tp: 'sd', sv: 'r', m: 'x' }));
+  const many = Array.from({ length: 15 }, (_, i): Alert => ({ k: `k${i}`, tp: 'sd', sv: 'r', m: 'x' }));
   const c = capAlerts(many);
-  assert.equal(c.al.length, MAX_ALERTS); assert.equal(c.ac, 9);
+  assert.equal(c.al.length, MAX_ALERTS); assert.equal(c.ac, 15);
   assert.equal(capAlerts(many.slice(0, 3)).ac, undefined);
 });
 

@@ -13,7 +13,7 @@
 //   rr  only on red: stable keys of the red reasons ("silent:<mac>", "array", "parity", "cache", "unraid"), at most 4.
 //       The key does not change when a number inside the reason changes (cache 91% -> 92%), so the panel can tell a NEW
 //       reason (a key it has not seen in this red spell) from the same one moving. why[] is for display only.
-//   al  only when something needs attention: priority alerts, most important first, at most MAX_ALERTS (6):
+//   al  only when something needs attention: priority alerts, most important first, at most MAX_ALERTS (12):
 //       [{ k stable key, tp topic "bl"|"nw"|"sd"|"ev"|"us", sv "r" red | "a" amber, m plain-language message (<= 90 chars),
 //          a seconds active }]. See lib/panelAlerts.ts. ac = true alert count, only when the list was cut.
 //       Red here is the same thing as lvl "r"; rr and go stay for older firmware, the panel itself uses al.
@@ -49,7 +49,7 @@ export const SOURCE_TIMEOUT_MS = 6_000;
 export const LAST_GOOD_MAX_MS = 10 * 60_000;   // a failed source shows its last good copy (st=1) this long
 export const INFLUX_FRESH_S = 5 * 60;          // Unraid points older than this make storage/network stale
 export const MAX_MACS = 4;                     // the firmware has room for this many Darkbloom pages
-export const MAX_LINKS = 4;                    // and this many network links
+export const MAX_LINKS = 12;                   // and this many network links (every link the monitor reports, plus Unraid)
 export const MAX_DISKS = 16;                   // and this many disk rows
 
 import { DEFAULT_ALERT_CONFIG, capAlerts, collectAlerts, trackSince, type Alert, type AlertConfig } from './panelAlerts.ts';

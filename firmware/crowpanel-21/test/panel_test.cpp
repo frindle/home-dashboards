@@ -142,7 +142,7 @@ static void test_alert_parse() {
   CHECK(h.us.present && !h.us.ok);
   // more than the cap and junk entries are tolerated
   std::string many;
-  for (int i = 0; i < 9; i++) many += std::string(i ? "," : "") + R"({"k":"k)" + std::to_string(i) + R"(","tp":"sd","sv":"r","m":"x"})";
+  for (int i = 0; i < 15; i++) many += std::string(i ? "," : "") + R"({"k":"k)" + std::to_string(i) + R"(","tp":"sd","sv":"r","m":"x"})";
   many += R"(,{"tp":"sd"})";
   Feed m = with(many.c_str());
   CHECK(m.nal == MAX_AL);
@@ -376,6 +376,93 @@ static void test_scene() {
   n.detail = true; s = sc_of(lb, n, now, 60, ck); CHECK(has_text(s, "Review run 12") && find_text(s, "2 h") && has_text(s, "7 · 2 running"));
 }
 
+// ---- many links and many alerts (feed with N links / N alerts)
+static std::string nw_json(int n, bool totals) {
+  std::string l;
+  for (int i = 0; i < n; i++) {
+    char b[160];
+    snprintf(b, sizeof b, "%s{\"n\":\"L%d\",\"d\":%d.5,\"u\":%d.2%s}", i ? "," : "", i, i * 10, i,
+             totals ? ",\"t1\":[100,20],\"t7\":[700,140],\"t30\":[3000,600]" : "");
+    l += b;
+  }
+  return R"("nw":{"ok":1,"src":"wan","tp":"r","l":[)" + l + "]}";
+}
+static Feed feed_with(int links, int alerts, char sv = 'a') {
+  std::string s = body("g", "", "", "");
+  size_t a = s.find("\"nw\":{"), z = s.find(",\"sd\":{");
+  s = s.substr(0, a) + nw_json(links, true) + s.substr(z);
+  if (alerts) {
+    std::string al = ",\"al\":[";
+    for (int i = 0; i < alerts; i++) {
+      char b[160];
+      snprintf(b, sizeof b, "%s{\"k\":\"k%d\",\"tp\":\"nw\",\"sv\":\"%c\",\"m\":\"Alert number %d.\",\"a\":60}", i ? "," : "", i, sv, i);
+      al += b;
+    }
+    al += "]";
+    s.insert(s.find(",\"bl\":"), al);
+  }
+  Feed f; load(f, s, 1000); f.at_ms = 1000;
+  return f;
+}
+static int count_font(const Scene &s, int font) { int c = 0; for (int i = 0; i < s.n; i++) if (s.it[i].k == K_TEXT && s.it[i].font == font) c++; return c; }
+
+static void test_links() {
+  Clock ck; ck.valid = true; ck.t = 1763063880;
+  for (int n : {3, 4, 5, 6, 9}) {
+    Feed f = feed_with(n, 0);
+    CHECK(f.nw.n == n);   // every link the feed has is kept
+    Nav nv; nv.topic = T_NW;
+    Scene s = sc_of(f, nv, 2000, 60, ck); check_fit(s, "links overview");
+    char nm[8];
+    if (n == 3) { CHECK(count_font(s, F40) == 3); }
+    else { CHECK(count_font(s, F40) == 0); CHECK(n > 5 || find_text(s, "L1") != nullptr); }
+    CHECK(has_text(s, "MBPS"));
+    if (n <= 5) CHECK(!has_text(s, "MORE"));
+    if (n == 6) CHECK(has_text(s, "+2 MORE"));
+    if (n == 9) {   // the 4 busiest (L8..L5) in that order, never the quiet ones
+      CHECK(has_text(s, "+5 MORE"));
+      for (int i = 5; i < 9; i++) { snprintf(nm, sizeof nm, "L%d", i); CHECK(find_text(s, nm)); }
+      CHECK(!find_text(s, "L0") && !find_text(s, "L4"));
+      CHECK(find_text(s, "L8")->y < find_text(s, "L5")->y);
+    }
+    // detail pages list the links; 4 or more links turn the big title into a small label
+    for (int p = 0; p < 3; p++) {
+      nv.detail = true; nv.sub = p;
+      Scene d = sc_of(f, nv, 2000, 60, ck); check_fit(d, "links detail");
+      static const char *big[] = {"Last 24 h", "Last 7 days", "Last 30 days"}, *small[] = {"LAST 24 H", "LAST 7 DAYS", "LAST 30 DAYS"};
+      CHECK(has_text(d, n >= 4 ? small[p] : big[p]));
+      CHECK(!has_text(d, n >= 4 ? big[p] : small[p]));
+      CHECK(find_text(d, "L1") != nullptr && has_text(d, "press to go back"));
+      if (n == 5) { CHECK(find_text(d, "L4") != nullptr); CHECK(count_font(d, F40) == 0); }
+      if (n == 9) { CHECK(find_text(d, "L6") && !find_text(d, "L7")); }   // 7 rows fit inside the circle
+      for (int i = 0; i < d.n; i++) if (d.it[i].k == K_TEXT) CHECK(d.it[i].y <= 372 + 20);
+    }
+  }
+}
+
+static void test_alert_dots() {
+  Clock ck; ck.valid = true; ck.t = 1763063880;
+  for (int n : {1, 7, 8, 12}) {
+    Feed f = feed_with(3, n);
+    CHECK(f.nal == n);
+    Nav nv; on_feed(nv, f, 1000);
+    on_long_press(nv, f, 2000);
+    Scene s = sc_of(f, nv, 2500, 60, ck); check_fit(s, "alert dots");
+    char t[16]; snprintf(t, sizeof t, "1 OF %d", n);
+    CHECK(has_text(s, t));
+    int dots = 0, hollow = 0, wide = 0;
+    for (int i = 0; i < s.n; i++) if (s.it[i].k == K_RECT && s.it[i].h == 10) { dots++; if (s.it[i].bw == 2) hollow++; if (s.it[i].w == 22) wide++; }
+    if (n <= 7) { CHECK(dots == n + 1 && hollow == 1 && wide == 1); } else CHECK(dots == 0);
+    // turn past the last alert: the Done card, with its own hollow dot current
+    for (int i = 0; i < n; i++) on_rotate(nv, f, 1, 3000 + i);
+    Scene d = sc_of(f, nv, 4000, 60, ck);
+    CHECK(has_text(d, "Done"));
+    dots = 0; hollow = 0; wide = 0;
+    for (int i = 0; i < d.n; i++) if (d.it[i].k == K_RECT && d.it[i].h == 10) { dots++; if (d.it[i].bw == 2) hollow++; if (d.it[i].w == 22) wide++; }
+    if (n <= 7) { CHECK(dots == n + 1 && hollow == 1 && wide == 1); } else CHECK(dots == 0);
+  }
+}
+
 static void test_states() {
   Clock ck; ck.valid = true; ck.t = 1763063880;
   Feed g = green(); g.at_ms = 1000;
@@ -442,6 +529,8 @@ static void test_brightness() {
 
 int main() {
   test_parse(); test_alert_parse(); test_nav(); test_gesture(); test_view_stepping(); test_alert_model(); test_scene(); test_states(); test_system(); test_brightness();
+  test_links();
+  test_alert_dots();
   printf("%d checks, %d failed\n", checks, fails);
   return fails ? 1 : 0;
 }

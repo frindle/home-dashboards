@@ -16,9 +16,9 @@
 namespace panel {
 
 // Same limits as MAX_MACS / MAX_LINKS / MAX_DISKS in lib/panelFeed.ts. More Macs than this are ignored.
-constexpr int MAX_MACS = 4, MAX_LINKS = 4, MAX_DISKS = 16, MAX_RR = 4, MAX_WHY = 3;
+constexpr int MAX_MACS = 4, MAX_LINKS = 12, MAX_DISKS = 16, MAX_RR = 4, MAX_WHY = 3;
 constexpr int MAX_LAB = 4;
-constexpr int MAX_AL = 6, MAX_US_MODELS = 4;   // MAX_ALERTS / MAX_MODELS in lib/panelAlerts.ts, lib/panelUsage.ts
+constexpr int MAX_AL = 12, MAX_US_MODELS = 4;   // MAX_ALERTS / MAX_MODELS in lib/panelAlerts.ts, lib/panelUsage.ts
 constexpr int FEED_VERSION = 1;
 
 inline void cp(char *dst, size_t n, const char *src) {

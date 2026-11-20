@@ -287,7 +287,7 @@ test('Unraid link is appended to the WAN links only, capped at MAX_LINKS', () =>
   assert.equal(withExtraLink(wan, undefined), wan);
   assert.equal(withExtraLink(wan, down()), wan);
   assert.equal(withExtraLink(un, un), un);        // not a WAN section: unchanged
-  const many = parseWan(Array.from({ length: 6 }, (_, i) => ({ iface: `e${i}`, name: `L${i}`, rx_mbps: 1, tx_mbps: 1 })));
+  const many = parseWan(Array.from({ length: 15 }, (_, i) => ({ iface: `e${i}`, name: `L${i}`, rx_mbps: 1, tx_mbps: 1 })));
   assert.equal((many as any).l.length, MAX_LINKS);
   assert.equal((withExtraLink(many, un) as any).l.length, MAX_LINKS);
 });
