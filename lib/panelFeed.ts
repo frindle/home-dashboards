@@ -32,7 +32,9 @@
 //                                 par 1 parity check running, pp parity progress %, pe parity errors,
 //                                 na unread Unraid alert notifications, nwn unread warnings
 //   ev  tonight's charge plan (Rivian): plug 1 plugged in, soc %, lim charge limit %, amps, kwh wall kWh tonight,
-//                                 h charge window hours, tgt target SoC %, sf 1 shortfall, wk 1 work day
+//                                 h charge window hours, tgt target SoC %, sf 1 shortfall, wk 1 work day,
+//                                 optional: rg range miles, kw charging power kW (fresh only), ch 1 charging now,
+//                                 mf minutes to the charge limit (only while charging)
 //   us  Claude usage, only when PANEL_USAGE_TOKEN is set: h5 / wk { p % used, r seconds to reset }, m [{ n, p, r }] per-model
 //                                 weekly limits, bp 5-hour pace %/h, lm seconds to the limit at that pace, age seconds since
 //                                 the report, st 1 = report older than the stale window. See lib/panelUsage.ts.
@@ -332,6 +334,7 @@ export interface EvInput {
   plugged?: boolean | null; soc?: number | null; limit?: number | null;
   amps?: number | null; kwh?: number | null; windowHours?: number | null; targetPct?: number | null;
   shortfall?: boolean | null; isWork?: boolean | null;
+  rangeMi?: number | null; powerKw?: number | null; charging?: boolean | null; minutesToLimit?: number | null;
 }
 export function parseEv(i: EvInput | null): Section {
   if (!i) return { ok: 0, st: 0 };
@@ -341,6 +344,8 @@ export function parseEv(i: EvInput | null): Section {
       plug: i.plugged == null ? undefined : i.plugged ? 1 : 0,
       soc: rnd(i.soc), lim: rnd(i.limit), amps: rnd(i.amps), kwh: rnd(i.kwh, 1), h: rnd(i.windowHours, 1), tgt: rnd(i.targetPct),
       sf: i.shortfall ? 1 : undefined, wk: i.isWork == null ? undefined : i.isWork ? 1 : 0,
+      rg: rnd(i.rangeMi), kw: rnd(i.powerKw, 1), ch: i.charging == null ? undefined : i.charging ? 1 : 0,
+      mf: i.charging && i.minutesToLimit != null && i.minutesToLimit > 0 ? rnd(i.minutesToLimit) : undefined,
     }),
   };
 }

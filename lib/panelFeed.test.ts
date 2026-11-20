@@ -117,6 +117,14 @@ test('ev: plan fields, missing ones left out; null gives ok=0', () => {
   assert.equal(parseEv(null).ok, 0);
 });
 
+test('ev: optional range, power, charging and minutes to limit; minutes only while charging', () => {
+  const e = parseEv({ plugged: true, soc: 45, rangeMi: 152.4, powerKw: 7.64, charging: true, minutesToLimit: 110 }) as any;
+  assert.deepEqual([e.rg, e.kw, e.ch, e.mf], [152, 7.6, 1, 110]);
+  const n = parseEv({ plugged: true, soc: 45, charging: false, minutesToLimit: 110 }) as any;
+  assert.deepEqual(['rg' in n, 'kw' in n, n.ch, 'mf' in n], [false, false, 0, false]);
+  assert.equal('ch' in (parseEv({ plugged: true, soc: 45 }) as any), false);
+});
+
 const ok = (extra: Record<string, unknown> = {}): Section => ({ ok: 1, st: 0, ...extra });
 const down = (): Section => ({ ok: 0, st: 0 });
 
