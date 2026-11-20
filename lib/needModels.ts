@@ -375,10 +375,25 @@ export function planNeed(
 // Re-run scripts/backtest-need.mjs monthly and update this map.
 export const LIVE_BAND_OVERRIDES: BandOverrides = new Map([[70, 0.25], [80, 0.25], [90, 0.25], [100, 0.25]]);
 
+// Recency-weighted mean of used_pct over the work days before `asOf` (the weights of ewmaNeed's
+// 'kind' branch), from one day up: unlike ewmaNeed it never falls back to the all-days mean.
+// null without a known work day.
+export function workDayMean(data: NeedData, asOf: string): number | null {
+  const now = dayNum(asOf);
+  let sum = 0, w = 0;
+  for (const r of data.rows) {
+    if (r.date >= asOf) break;
+    if (!knownUse(r) || !data.workDays.has(r.date)) continue;
+    const wt = 0.5 ** (Math.max(0, now - dayNum(r.date)) / WORK_RATE_HALF_LIFE_DAYS);
+    sum += wt * (r.used_pct as number); w += wt;
+  }
+  return w > 0 ? sum / w : null;
+}
+
 export interface LiveNeed {
   work: number | null;          // % per work day, no margin
   off: number | null;           // % per day off, no margin
-  workSource: string;           // 'curve' | 'sparse' | 'override' | 'max' | 'a-fallback'
+  workSource: string;           // 'curve' | 'sparse' | 'override' | 'max' | 'measured'
   tempF: number | null;         // temperature the work need was planned at
 }
 
@@ -400,9 +415,16 @@ export function liveNeed(
   }
   const aw = ewmaNeed(data, asOf, true);
   const ao = offDayNeed(data, asOf);
-  let work: number | null = b ? b.pct : aw?.pct ?? null;
-  let workSource = b ? b.source : 'a-fallback';
-  if (b && rule.workDay === 'max' && aw && aw.pct > b.pct) { work = aw.pct; workSource = 'max'; }
+  let work: number | null = b ? b.pct : null;
+  let workSource: string = b ? b.source : 'measured';
+  if (b && rule.workDay === 'max' && aw?.source === 'kind' && aw.pct > b.pct) { work = aw.pct; workSource = 'max'; }
+  // Floor: what recent work days really used. tempNeed counts drive-log miles, and the log misses
+  // drives (a lost return leg makes a 40 mi day read 20 mi); used_pct is the SoC drop and sees the
+  // whole day. The all-days mean is never a work-day need: on a thin history it is mostly days off
+  // (Penn 2026-11-19: it planned 7% for a 19% work day and he got home under the 25% floor).
+  // No measured work day and no curve: null, so the planner keeps the charge-history estimate.
+  const kw = workDayMean(data, asOf);
+  if (kw !== null && (work === null || kw > work)) { work = kw; workSource = 'measured'; }
   return { work, off: ao?.pct ?? null, workSource, tempF: b?.tempF ?? null };
 }
 

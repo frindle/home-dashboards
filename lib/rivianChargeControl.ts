@@ -383,6 +383,7 @@ function planFields(s: RivianChargeStatus) {
   const n = s.night;
   return {
     ewma_kwh: s.need?.ewmaKwh, planned_kwh: s.need?.plannedKwh, work_kwh: s.need?.rates?.workKwh, off_kwh: s.need?.rates?.offKwh,
+    need_work_pct: s.need7?.work ?? undefined, need_off_pct: s.need7?.off ?? undefined,   // the daily-use need the plan used (null: charge history)
     next_day_work: s.need?.nextDayWork ?? undefined, gap_kwh: s.daily?.gapKwh, floor_kwh: s.daily?.floorKwh,
     tonight_kwh: s.daily?.tonightKwh, tonight_amps: s.daily?.tonightAmps,
     window_hours: n?.windowHours, next_window_hours: n?.nextWindowHours ?? undefined, buffer_pct: n?.bufferPct,

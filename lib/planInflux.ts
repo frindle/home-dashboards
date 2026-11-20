@@ -16,7 +16,9 @@
 //     slot (1 = the 08:15 forecast run, 2 = the 23:00 update run, absent
 //     otherwise). control_error is the one string field (the scrubbed reason a
 //     run failed, only when it did); hold, no_need and no_need_room_kw record
-//     the plug-in rule for no-need nights.
+//     the plug-in rule for no-need nights. need_work_pct / need_off_pct are the
+//     daily-use need the plan used (% per day, no margin); absent when the
+//     charge history (planned_kwh) planned the night.
 import { influxTarget, writeLines } from './chargeSessionInflux.ts';
 import { DEPART_BUFFER_MIN, HOME_BUFFER_MIN, type Shift } from './chargePlan.ts';
 
