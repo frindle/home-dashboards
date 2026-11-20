@@ -19,6 +19,9 @@ jobs:
       - run: npm ci
       - run: npm run build
 
+      - name: CI auto-retry tests
+        run: python3 -I tests/test-ci-infra-retry.py
+
   docker:
     name: Docker build
     runs-on: ubuntu-latest
