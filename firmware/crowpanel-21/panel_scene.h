@@ -220,6 +220,19 @@ inline void dots(B &b, int n, int cur, uint32_t curcol, float y = 404) {
     x += (c ? 22 : 10) + 8;
   }
 }
+// Alert dots: one per visible alert and a hollow one for the Done card. More than 7 alerts: no dots (the "1 OF n" counter stays).
+inline void alert_dots(B &b, int n, int cur, uint32_t col, float y = 404) {
+  if (n < 1 || n > 7) return;
+  int total = n + 1;                       // cur == n is the Done card
+  float w = (total - 1) * 10 + 22 + (total - 1) * 8;
+  float x = 240 - w / 2;
+  for (int i = 0; i < total; i++) {
+    bool c = i == cur, done = i == n;
+    Item *r = b.rect(x, y, c ? 22 : 10, 10, 5, done ? 0x000000 : (c ? col : C_IDLE));
+    if (done) { r->bw = 2; r->bg = c ? col : C_IDLE; }
+    x += (c ? 22 : 10) + 8;
+  }
+}
 inline void hint(B &b, const char *t, float y = 372) { b.text(t, F15, C_LABEL, 240, y + BASE15, 0, 380); }
 
 // Alert marker: pill with "!" and the count, top centre. Colour of the worst alert. `y` 52, or 56 on arc screens.
@@ -371,8 +384,52 @@ inline void bl_overview(B &b, const Feed &f, bool old) {
   }
 }
 
-// Network overview: one column per link (max 3).
+// Network overview. Up to 3 links: one column per link. 4 or 5: one row per link. 6 or more: the 4 busiest rows and
+// "+N MORE" (the real count). Fonts stay the fixed set; nothing shrinks or scrolls.
+inline float traffic(const Link &l) { return (l.d > 0 ? l.d : 0) + (l.u > 0 ? l.u : 0); }
+inline void nw_list(B &b, const Feed &f, bool old) {
+  const auto &w = f.nw;
+  Look lk = look(old, C_BLUE);
+  int idx[MAX_LINKS], k = 0;
+  for (int i = 0; i < w.n; i++) idx[k++] = i;
+  int more = 0;
+  if (w.n > 5) {
+    for (int i = 1; i < k; i++)   // busiest first (stable insertion sort)
+      for (int j = i; j > 0 && traffic(w.l[idx[j]]) > traffic(w.l[idx[j - 1]]); j--) { int t = idx[j]; idx[j] = idx[j - 1]; idx[j - 1] = t; }
+    more = w.n - 4;
+    k = 4;
+  }
+  Stack s;
+  int hd = s.add(18);
+  int pl = old ? s.add(26, 10) : -1;
+  int rows = s.add(k * 26.8f + (k - 1) * 6, old ? 10 : 12);
+  int mo = more ? s.add(18, 6) : -1;
+  int ft = s.add(18, old ? 8 : 8);
+  s.go(TOP, BOT);
+  header(b, IC_NET, "NETWORK", C_BLUE, s.y[hd]);
+  if (old) oldpill(b, "OLD DATA", s.y[pl]);
+  for (int i = 0; i < k; i++) {
+    const Link &l = w.l[idx[i]];
+    float y = s.y[rows] + i * (26.8f + 6);
+    b.text(l.n, F22, lk.val, 82, y + BASE22, 1, 130);
+    char d[12], u[12];
+    mbps(d, sizeof d, l.d);
+    mbps(u, sizeof u, l.u);
+    b.icon(IC_DOWN, 16, old ? C_IDLE : C_BLUE, 220, y + 5.4f);
+    b.text(d, F22, lk.val, 242, y + BASE22, 1, 80);
+    b.icon(IC_UP, 16, C_LABEL, 330, y + 5.4f);
+    b.text(u, F22, C_LABEL, 352, y + BASE22, 1, 70);
+  }
+  if (more) {
+    char t[16];
+    snprintf(t, sizeof t, "+%d MORE", more);
+    b.text(t, F15, C_LABEL, 240, s.y[mo] + BASE15, 0, 380, 2);
+  }
+  b.text("MBPS · LIVE", F15, C_LABEL, 240, s.y[ft] + BASE15, 0, 380, 2);
+}
+
 inline void nw_overview(B &b, const Feed &f, bool old) {
+  if (f.nw.n > 3) { nw_list(b, f, old); return; }
   const auto &w = f.nw;
   Look lk = look(old, C_BLUE);
   Stack s;
@@ -383,7 +440,7 @@ inline void nw_overview(B &b, const Feed &f, bool old) {
   s.go(TOP, BOT);
   header(b, IC_NET, "NETWORK", C_BLUE, s.y[hd]);
   if (old) oldpill(b, "OLD DATA", s.y[pl]);
-  int n = w.n > 3 ? 3 : w.n;
+  int n = w.n;
   float cw = (340 - 20) / 3.0f;
   float left = 240 - (n * cw + (n - 1) * 10) / 2;
   for (int i = 0; i < n; i++) {
@@ -640,24 +697,32 @@ inline void nw_detail(B &b, const Feed &f, int period) {
   const auto &w = f.nw;
   static const char *pn[] = {"Last 24 h", "Last 7 days", "Last 30 days"};
   static const char *pc[] = {"Today", "7 days", "30 days"};
+  bool many = w.n >= 4;              // 4 or more links: the big title becomes a small label and the rows tighten
+  int n = w.n > 7 ? 7 : w.n;         // 7 rows is all that fits inside the circle
+  float gap = !many ? 10 : (n <= 5 ? 6 : 2);
+  float head = many ? 22 : 28;       // column heads plus the space under them
   Stack s;
   int hd = s.add(18);
-  int pe = s.add(48.8f, 4);
-  int n = w.n > 3 ? 3 : w.n;
-  int grid = s.add(18 + (n) * (10 + 26.8f), 18);
+  int pe = s.add(many ? 18 : 48.8f, many ? 8 : 4);
+  int grid = s.add(head + n * 26.8f + (n - 1) * gap, many ? 10 : 18 - 0);
   int total_at = -1;
   const Link *prim = nullptr;
   for (int i = 0; i < w.n; i++) if (!same_name(w.l[i].n, "unraid")) { prim = &w.l[i]; break; }
-  if (prim) total_at = s.add(18, 16);
+  if (prim && n <= 6) total_at = s.add(18, 16);
   s.go(TOP, BOT);
   header(b, 0, "NETWORK · DATA USED", C_LABEL, s.y[hd]);
-  b.text(w.rolling ? pn[period] : pc[period], F40, C_BLUE, 240, s.y[pe] + BASE40_N, 0, 380);
+  if (many) {
+    char lab[16];
+    snprintf(lab, sizeof lab, "%s", w.rolling ? pn[period] : pc[period]);
+    for (char *p = lab; *p; p++) if (*p >= 'a' && *p <= 'z') *p -= 32;
+    b.text(lab, F15, C_BLUE, 240, s.y[pe] + BASE15, 0, 380, 2);
+  } else b.text(w.rolling ? pn[period] : pc[period], F40, C_BLUE, 240, s.y[pe] + BASE40_N, 0, 380);
   float y = s.y[grid];
   b.text("DOWN", F15, C_LABEL, 295, y + BASE15, 2, 100, 2);
   b.text("UP", F15, C_LABEL, 403, y + BASE15, 2, 100, 2);
   for (int i = 0; i < n; i++) {
     const Link &l = w.l[i];
-    float ry = y + 18 + 10 + i * (26.8f + 10);
+    float ry = y + 18 + (many ? 4 : 10) + i * (26.8f + gap);
     char d[16], u[16];
     data_gb(d, sizeof d, l.t[period][0], l.has_t[period]);
     data_gb(u, sizeof u, l.t[period][1], l.has_t[period]);
@@ -862,7 +927,7 @@ inline void alert_view(B &b, const Feed &f, const Nav &nv, uint32_t now) {
     b.text("Done", F40, C_WHITE, 240, s.y[t] + BASE40_11, 0, 380);
     b.text(nvis ? "That was every alert" : "No alerts left", F22, C_LABEL, 240, s.y[u] + BASE22, 0, 380);
     hint(b, "press to go back", 372);
-    dots(b, nvis + 1, nvis, C_OK);
+    alert_dots(b, nvis, nvis, C_OK);
     return;
   }
   const Alert &a = f.al[nv.av_i < f.nal ? nv.av_i : vis[0]];
@@ -905,7 +970,7 @@ inline void alert_view(B &b, const Feed &f, const Nav &nv, uint32_t now) {
   int h2 = b.group(240, 0);
   b.text("hold", F15, C_WHITE, 0, 350 + 18 + 4 + BASE15, 1, 0, 0, h2);
   b.text(" snooze 1 h", F15, C_LABEL, 0, 350 + 18 + 4 + BASE15, 1, 0, 0, h2);
-  dots(b, nvis + 1, pos, lc);
+  alert_dots(b, nvis, pos, lc);
 }
 
 // ----- the night layout: hero + one line, all white

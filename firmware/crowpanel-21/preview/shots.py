@@ -102,6 +102,24 @@ w["us"].update(h5=dict(p=100, r=100000), wk=dict(p=100, r=500000), lm=200000)
 w["lb"]["i"][0]["t"] = "Review the very long eval results report"
 F["worst"] = w
 
+def nlinks(n):
+    f = design()
+    names = ["Cox", "Starlink", "Unraid", "Verizon", "Lumen", "Comcast", "Frontier", "Spectrum", "T-Mobile"]
+    speeds = [(4.2, 0.7), (0.0, 0.0), (27, 7.9), (12.4, 3.1), (88.0, 12.5), (1.2, 0.3), (64.5, 9.9), (2.2, 0.4), (150.3, 20.8)]
+    t = [([143, 31], [917, 466], [4880, 1790]), ([0, 0], [0.1, 0.1], [0.5, 0.6]), ([373, 113], [2550, 946], [12300, 3980])] * 3
+    f["nw"]["l"] = [dict(n=names[i], d=speeds[i][0], u=speeds[i][1], t1=t[i][0], t7=t[i][1], t30=t[i][2]) for i in range(n)]
+    return f
+for n in (4, 5, 6, 9):
+    F["links%d" % n] = nlinks(n)
+
+def nalerts(n):
+    f = design(); f["lvl"] = "a"
+    f["al"] = [alert("k%d" % i, "nw", "a", "No traffic on link %d. Check it." % (i + 1), 600 + i * 60) for i in range(n)]
+    f["ac"] = n
+    return f
+for n in (1, 7, 8, 12):
+    F["alerts%dx" % n] = nalerts(n)
+
 # ---- shots: (slug, feed, actions, description, age seconds since the feed arrived, options)
 S = []
 def shot(slug, feed, actions="", desc="", age=5, opts=""):
@@ -199,6 +217,22 @@ shot("worst-network-detail", "worst", at("nw", True), "Long names and TB rows")
 shot("worst-storage", "worst", at("sd"), "99% used, parity check")
 shot("worst-claude", "worst", at("us"), "100% and a long limit time")
 shot("worst-lab-detail", "worst", at("lab", True), "Long Lab item")
+
+# more links and more alerts
+shot("links-3", "design", at("nw"), "Network overview, 3 links (columns)")
+shot("links-4", "links4", at("nw"), "Network overview, 4 links (rows)")
+shot("links-5", "links5", at("nw"), "Network overview, 5 links (rows, fits the circle)")
+shot("links-6", "links6", at("nw"), "Network overview, 6 links: 4 busiest and +2 MORE")
+shot("links-9", "links9", at("nw"), "Network overview, 9 links: 4 busiest and +5 MORE")
+shot("links-5-detail", "links5", at("nw", True), "Network detail, 5 links (small LAST 24 H label)")
+shot("links-5-detail-week", "links5", at("nw", True, "R+"), "Network detail, 5 links, 7 days")
+shot("links-9-detail", "links9", at("nw", True), "Network detail, 9 links (7 rows fit)")
+shot("alerts-1", "alerts1x", "L", "1 alert: one dot plus the hollow Done dot")
+shot("alerts-7", "alerts7x", "L R+ R+", "7 alerts: seven dots plus hollow, third current")
+shot("alerts-7-done", "alerts7x", "L R+ R+ R+ R+ R+ R+ R+", "7 alerts: the Done card, hollow dot current")
+shot("alerts-8", "alerts8x", "L R+ R+", "8 alerts: no dots, 3 OF 8 counter")
+shot("alerts-12", "alerts12x", "L", "12 alerts: no dots, 1 OF 12 counter")
+shot("alerts-12-done", "alerts12x", "L " + " ".join(["R+"] * 12), "12 alerts: the Done card without dots", age=30)
 
 def main(out):
     fd = os.path.join(out, "feeds")

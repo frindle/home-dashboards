@@ -15,7 +15,7 @@
 // Thresholds have defaults and can be changed in the environment (parseAlertConfig); see .env.example.
 import type { Section } from './panelFeed.ts';
 
-export const MAX_ALERTS = 6;
+export const MAX_ALERTS = 12;
 export const ALERT_MSG_MAX = 90;
 export const CACHE_AMBER_PCT = 80;
 export const CACHE_RED_PCT = 90;
