@@ -8,41 +8,22 @@ A=GPIO42 B=GPIO4, encoder press on PCF8574 P5). The display, PCF8574 and encoder
 lesson 05.
 
 ## How to use it
-- Home is the Darkbloom overview. Turn the knob to move between topics: Darkbloom, Network, Storage, EV tonight, Claude usage (only when the dashboard has usage turned on), Clock.
-- Press to open a topic's detail pages, turn to move through them, press again to go back.
-- Hold the knob (about a second, release) to open the alert view from any screen; hold again to go back. See Alerts below.
-- After 2 minutes without touching the knob it returns to the Darkbloom overview (an alert view that opened by itself stays until you act).
-- Ring colour: blue ok, amber attention, red act, dark grey no link.
+- Seven topics, each with a fixed dot: Darkbloom, Network, Storage, EV, Claude, Lab, Clock. Lab stays hidden (six dots) until the dashboard sends `lb`; Claude is hidden without `us`. A topic with no data shows "No data yet".
+- Turn the knob for the next topic. Press for the topic's detail (Network has three: 24 h, 7 days, 30 days; turn to step), press again to go back.
+- Hold the knob 600 ms from any screen to open the alert view. After 2 minutes untouched the panel returns to Darkbloom.
+- Ring (4 px green, 6 px amber, 10 px red, grey when the dashboard is unreachable) and an `! n` marker pill in the worst alert's colour show status on every screen.
+- Screens fade through black in 120 ms. At brightness 1 to 5 % the night layout shows only the hero value and one line (ring and marker stay).
+- Boot, Wi-Fi setup and firmware update (progress from the OTA hooks) have their own screens.
 
-### What each page shows
-- Darkbloom overview: earned today (all Macs), serving count, month, watts, silent Mac or open alerts. Detail: one page per
-  Mac (up to 4, shown as the feed lists them, no reflash).
-- Network overview: total down, and each link's down/up in Mbps. Detail: one page per link with 24 h / 7 day / 30 day
-  GB down/up (rolling windows; the label switches to today/week/month if the feed ever sends calendar periods).
-- Storage overview: percent used, TB, disks spinning, array and parity state, hottest disk. Detail: an array page, then
-  the disks four per page (usage, temperature, spinning).
-- EV tonight: state of charge, plug, target and hours, amps, kWh, short-of-target warning. Detail: the plan.
-- Claude usage: 5-hour percent with time to reset and a bar, weekly percent with reset, and the pace ("full in 15 min" when the limit would come before the reset). Detail: burn rate per hour and per-model weekly limits when the reporter sends them.
-- Clock: time, date and the current reasons if not all ok.
+### Alert view
+Turn for the next alert, past the last one a "Done" card; press on an alert opens its topic, press on Done returns to the screen you came from; hold snoozes that alert for 1 hour (on the panel only, not synced). A new red alert opens the view by itself.
 
-### Alerts (one model for every screen)
-The feed carries a short priority list: disk and array (cache full, array full, a disk full, parity, Unraid notices), Darkbloom
-(a Mac silent, open alerts), network (every link idle, failover from the primary link, data cap), Claude usage near the
-limit, and EV (short of target). Red alerts mean act now, amber mean worth knowing.
-- **Badge.** While the list is not empty every screen, overview and detail, shows a pill at the top edge: `! ALERT` or
-  `! 3 ALERTS`, red if any alert is red, otherwise amber. It sits above the title so it never covers the page.
-- **One gesture.** Hold the knob for about a second (long press, acts on release) on any screen to open the alert view. The
-  short press keeps its meaning (detail in and out).
-- **Alert view.** Topic in big letters, the whole message in plain words, and how long it has been active. Turn to step
-  through the alerts. Short press opens that alert's topic page (the silent Mac's own page for a silent Mac). Hold to go
-  back to exactly the screen you came from. The two-minute idle timer closes a view you opened by hand.
-- **Snooze and automatic jump.** Seeing an alert in the view snoozes it for 15 minutes: it stays in the badge but will not
-  jump again. A red alert you have not seen, an amber that turns red, or a seen red whose 15 minutes ended jumps to the view by
-  itself, from wherever you are; the screen you left is remembered. Amber never jumps.
-- **Clearing.** Alerts leave the list when the cause clears. An alert that clears and returns counts as new. The view closes
-  by itself when the list is empty (home if it jumped by itself, back where you were if you opened it).
-- **Staleness.** With no fresh feed (over 75 s) the badge and alerts are hidden along with the numbers.
-- "Active for" counts from when the dashboard first saw the alert; a dashboard restart starts it again.
+### Darkbloom
+No per-Mac model: the account's model shows once under the header ("serving <model>") if the optional `bl.md` key is sent (the dashboard does not send it yet). Each Mac has one status line.
+
+### Build settings
+`timezone` (POSIX TZ string) and `fw_version` are substitutions at the top of the yaml. The icon data in `panel_icons.h` is generated by `tools/gen_icons.py`. Missing from the feed: model, per-disk errors, per-section age in minutes (only an old-data flag), new firmware version for the update screen, and links beyond three on Network.
+
 
 ### Claude usage
 Turned on by `PANEL_USAGE_TOKEN` on the dashboard; without it the route answers 404, the feed has no usage keys and the topic
@@ -131,3 +112,17 @@ screen and colours, knob direction and clicks per step, the press (PCF8574 P5, a
 setup, the backlight dimming, and that the panel recovers after the dashboard restarts.
 
 Not included on purpose: Plex streams, queue depth, weather, Studio temperatures, a Lab section (no existing source).
+
+## Lab page (optional feed section)
+
+Turned on by `PANEL_LAB_TOKEN` on the dashboard (optional `PANEL_LAB_STALE_S`, default 1200). Without the token the route
+answers 404, the feed has no `lb` key and the panel hides the Lab topic. No reporter is shipped; anything that can send
+an HTTP request can post this (the full contract is at the top of `lib/panelLab.ts`):
+
+    POST /api/panel/lab        Authorization: Bearer <PANEL_LAB_TOKEN>
+    { "v": 1,
+      "items": [ { "text": "Approve model swap", "since": 1766250000, "warn": true } ],
+      "queue": { "total": 7, "running": 2 } }
+
+Up to 6 items, text 1 to 28 characters, `since` (epoch seconds or ISO date) or `age_s` (seconds already waiting), optional
+`warn`. Body at most 1024 bytes. The feed carries it as `lb: { i: [{ t, a, w }], q, r, age, st }`.

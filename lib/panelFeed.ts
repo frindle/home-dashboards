@@ -32,10 +32,14 @@
 //                                 par 1 parity check running, pp parity progress %, pe parity errors,
 //                                 na unread Unraid alert notifications, nwn unread warnings
 //   ev  tonight's charge plan (Rivian): plug 1 plugged in, soc %, lim charge limit %, amps, kwh wall kWh tonight,
-//                                 h charge window hours, tgt target SoC %, sf 1 shortfall, wk 1 work day
+//                                 h charge window hours, tgt target SoC %, sf 1 shortfall, wk 1 work day,
+//                                 optional: rg range miles, kw charging power kW (fresh only), ch 1 charging now,
+//                                 mf minutes to the charge limit (only while charging)
 //   us  Claude usage, only when PANEL_USAGE_TOKEN is set: h5 / wk { p % used, r seconds to reset }, m [{ n, p, r }] per-model
 //                                 weekly limits, bp 5-hour pace %/h, lm seconds to the limit at that pace, age seconds since
 //                                 the report, st 1 = report older than the stale window. See lib/panelUsage.ts.
+//   lb  lab, only when PANEL_LAB_TOKEN is set: i [{ t text, a seconds waiting, w 1 = warn }], q model queue total, r running,
+//                                 age seconds since the report, st 1 = old. The panel hides its Lab page without it. See lib/panelLab.ts.
 //
 // Missing numbers are left out of the object, never sent as null, to save bytes and parse work on the device.
 
@@ -330,6 +334,7 @@ export interface EvInput {
   plugged?: boolean | null; soc?: number | null; limit?: number | null;
   amps?: number | null; kwh?: number | null; windowHours?: number | null; targetPct?: number | null;
   shortfall?: boolean | null; isWork?: boolean | null;
+  rangeMi?: number | null; powerKw?: number | null; charging?: boolean | null; minutesToLimit?: number | null;
 }
 export function parseEv(i: EvInput | null): Section {
   if (!i) return { ok: 0, st: 0 };
@@ -339,6 +344,8 @@ export function parseEv(i: EvInput | null): Section {
       plug: i.plugged == null ? undefined : i.plugged ? 1 : 0,
       soc: rnd(i.soc), lim: rnd(i.limit), amps: rnd(i.amps), kwh: rnd(i.kwh, 1), h: rnd(i.windowHours, 1), tgt: rnd(i.targetPct),
       sf: i.shortfall ? 1 : undefined, wk: i.isWork == null ? undefined : i.isWork ? 1 : 0,
+      rg: rnd(i.rangeMi), kw: rnd(i.powerKw, 1), ch: i.charging == null ? undefined : i.charging ? 1 : 0,
+      mf: i.charging && i.minutesToLimit != null && i.minutesToLimit > 0 ? rnd(i.minutesToLimit) : undefined,
     }),
   };
 }
@@ -483,11 +490,11 @@ export function withBr(body: PanelBody, br: number | undefined): PanelBody {
 // ---------- aggregator ----------
 
 export type SourceFn = () => Promise<Section>;
-export interface Sources { bl: SourceFn; nw: SourceFn; sd: SourceFn; ev: SourceFn; us?: SourceFn }   // us: Claude usage, only when enabled
+export interface Sources { bl: SourceFn; nw: SourceFn; sd: SourceFn; ev: SourceFn; us?: SourceFn; lb?: SourceFn }   // us: Claude usage, lb: lab; each only when enabled
 
 export interface PanelBody {
   v: 1; t: number; lvl: Level; why: string[]; go?: string; rr?: string[]; br?: number; al?: Alert[]; ac?: number;
-  bl: Section; nw: Section; sd: Section; ev: Section; us?: Section;
+  bl: Section; nw: Section; sd: Section; ev: Section; us?: Section; lb?: Section;
 }
 
 export interface AggOpts {
@@ -512,11 +519,11 @@ export async function buildPanel(src: Sources, opts: AggOpts = {}): Promise<Pane
   const nowMs = opts.nowMs ?? Date.now();
   const timeoutMs = opts.timeoutMs ?? SOURCE_TIMEOUT_MS;
   const good = opts.lastGood ?? new Map();
-  const keys = (src.us ? ['bl', 'nw', 'sd', 'ev', 'us'] : ['bl', 'nw', 'sd', 'ev']) as ('bl' | 'nw' | 'sd' | 'ev' | 'us')[];
+  const keys = ['bl', 'nw', 'sd', 'ev', ...(src.us ? ['us'] : []), ...(src.lb ? ['lb'] : [])] as ('bl' | 'nw' | 'sd' | 'ev' | 'us' | 'lb')[];
   const out = await Promise.all(keys.map(async (k): Promise<Section> => {
     let sec: Section;
     try { sec = await withTimeout(src[k]!(), timeoutMs); } catch { sec = { ok: 0, st: 0 }; }
-    if (k === 'us') return sec;   // in-memory numbers with their own stale window: no last-good copy
+    if (k === 'us' || k === 'lb') return sec;   // in-memory numbers with their own stale window: no last-good copy
     if (sec.ok) { good.set(k, { at: nowMs, sec }); return sec; }
     const g = good.get(k);
     if (g && nowMs - g.at <= LAST_GOOD_MAX_MS) return { ...g.sec, st: 1 };
@@ -524,13 +531,14 @@ export async function buildPanel(src: Sources, opts: AggOpts = {}): Promise<Pane
   }));
   const [bl, nw, sd, ev] = out;
   const us = src.us ? out[4] : undefined;
+  const lb = src.lb ? out[src.us ? 5 : 4] : undefined;
   const cfg = opts.alertCfg ?? DEFAULT_ALERT_CONFIG;
   const { lvl, why, go, rr } = alertLevel({ bl, nw, sd, ev, ...(us ? { us } : {}) }, cfg);
   const { al, ac } = capAlerts(trackSince(opts.alertSince ?? new Map(), collectAlerts({ bl, nw, sd, ev, ...(us ? { us } : {}) }, cfg), nowMs));
   const body: PanelBody = {
     v: 1, t: Math.floor(nowMs / 1000), lvl, why, ...(go ? { go } : {}), ...(rr ? { rr } : {}),
     ...(opts.dim ? { br: brightnessAt(opts.dim, nowMs) } : {}),
-    ...(al.length ? { al } : {}), ...(ac ? { ac } : {}), bl, nw, sd, ev, ...(us ? { us } : {}),
+    ...(al.length ? { al } : {}), ...(ac ? { ac } : {}), bl, nw, sd, ev, ...(us ? { us } : {}), ...(lb ? { lb } : {}),
   };
   return fitBody(body);
 }

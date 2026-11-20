@@ -1,7 +1,9 @@
 // IO for the panel feed (GET /api/panel): reads bloom-ledger, network-bandwidth-monitor, InfluxDB and the Rivian night
 // plan, and hands each result to the pure parsers in lib/panelFeed.ts. Read-only: nothing here writes anywhere.
 // Hosts and tokens come from the environment (see .env.example, "Panel feed"); a missing URL makes that section ok=0.
+import { labSection, parseLabConfig, readLab } from '@/lib/panelLab';
 import { parseUsageConfig, readUsage, usageSection } from '@/lib/panelUsage';
+import { readRivianParallaxState } from '@/lib/rivian';
 import { rivianNightPlan } from '@/lib/rivianNightPlan';
 import {
   earnedCents, parseBloom, parseEv, parseFluxCsv, parseNetTotals, parseStorage, parseTotalsMap, parseUnraidNet, parseWan,
@@ -112,7 +114,15 @@ async function evTonight(): Promise<Section> {
   const run = await rivianNightPlan(Date.now());
   const r = run.built?.result;
   if (!r) return { ok: 0, st: 0 };
+  const x = (run.state ?? {}) as { rangeMi?: unknown; minutesToFull?: unknown; isCharging?: unknown };
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  let par: ReturnType<typeof readRivianParallaxState> = null;
+  try { par = readRivianParallaxState(); } catch { /* optional */ }
+  const charging = typeof x.isCharging === 'boolean' ? x.isCharging : null;
   return parseEv({
+    rangeMi: num(x.rangeMi) && num(x.rangeMi)! > 0 ? num(x.rangeMi) : null, charging,
+    powerKw: par?.fresh && charging ? par.powerKw : null,
+    minutesToLimit: num(x.minutesToFull) ?? (par?.timeToEndOfChargeSec != null ? Math.round(par.timeToEndOfChargeSec / 60) : null),
     plugged: run.state?.isPluggedIn ?? null, soc: run.state?.chargePercent ?? null, limit: run.state?.chargeLimit ?? null,
     amps: r.plan.amps, kwh: r.plan.kwh, windowHours: r.plan.windowHours, targetPct: r.plan.targetPct,
     shortfall: r.plan.shortfall, isWork: r.isWork,
@@ -125,4 +135,10 @@ async function claudeUsage(): Promise<Section> {
   return usageSection(readUsage(), usageCfg?.staleMs ?? 0, Date.now());
 }
 
-export const panelSources: Sources = { bl: darkbloom, nw: network, sd: storage, ev: evTonight, ...(usageCfg ? { us: claudeUsage } : {}) };
+// Lab: items waiting on a person, POSTed to /api/panel/lab. Only part of the feed when PANEL_LAB_TOKEN is set.
+const labCfg = parseLabConfig(process.env);
+async function lab(): Promise<Section> {
+  return labSection(readLab(), labCfg?.staleMs ?? 0, Date.now());
+}
+
+export const panelSources: Sources = { bl: darkbloom, nw: network, sd: storage, ev: evTonight, ...(usageCfg ? { us: claudeUsage } : {}), ...(labCfg ? { lb: lab } : {}) };
