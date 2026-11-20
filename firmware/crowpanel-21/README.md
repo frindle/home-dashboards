@@ -8,9 +8,10 @@ A=GPIO42 B=GPIO4, encoder press on PCF8574 P5). The display, PCF8574 and encoder
 lesson 05.
 
 ## How to use it
-- Home is the Darkbloom overview. Turn the knob to move between topics: Darkbloom, Network, Storage, EV tonight, Clock.
+- Home is the Darkbloom overview. Turn the knob to move between topics: Darkbloom, Network, Storage, EV tonight, Claude usage (only when the dashboard has usage turned on), Clock.
 - Press to open a topic's detail pages, turn to move through them, press again to go back.
-- After 2 minutes without touching the knob it returns to the Darkbloom overview (the alert screen stays until you act).
+- Hold the knob (about a second, release) to open the alert view from any screen; hold again to go back. See Alerts below.
+- After 2 minutes without touching the knob it returns to the Darkbloom overview (an alert view that opened by itself stays until you act).
 - Ring colour: blue ok, amber attention, red act, dark grey no link.
 
 ### What each page shows
@@ -21,13 +22,39 @@ lesson 05.
 - Storage overview: percent used, TB, disks spinning, array and parity state, hottest disk. Detail: an array page, then
   the disks four per page (usage, temperature, spinning).
 - EV tonight: state of charge, plug, target and hours, amps, kWh, short-of-target warning. Detail: the plan.
+- Claude usage: 5-hour percent with time to reset and a bar, weekly percent with reset, and the pace ("full in 15 min" when the limit would come before the reset). Detail: burn rate per hour and per-model weekly limits when the reporter sends them.
 - Clock: time, date and the current reasons if not all ok.
-- Alert: shown automatically on red.
 
-### Red auto-switch
-When the feed goes red it carries a `go` target and reason keys. The panel jumps to the Alert screen. Press opens the
-silent Mac or Storage; turn or press snoozes it for 15 minutes. A new red reason jumps at once, even while snoozed.
-When red clears, the panel goes home. Amber never jumps, it only tints the ring.
+### Alerts (one model for every screen)
+The feed carries a short priority list: disk and array (cache full, array full, a disk full, parity, Unraid notices), Darkbloom
+(a Mac silent, open alerts), network (every link idle, failover from the primary link, data cap), Claude usage near the
+limit, and EV (short of target). Red alerts mean act now, amber mean worth knowing.
+- **Badge.** While the list is not empty every screen, overview and detail, shows a pill at the top edge: `! ALERT` or
+  `! 3 ALERTS`, red if any alert is red, otherwise amber. It sits above the title so it never covers the page.
+- **One gesture.** Hold the knob for about a second (long press, acts on release) on any screen to open the alert view. The
+  short press keeps its meaning (detail in and out).
+- **Alert view.** Topic in big letters, the whole message in plain words, and how long it has been active. Turn to step
+  through the alerts. Short press opens that alert's topic page (the silent Mac's own page for a silent Mac). Hold to go
+  back to exactly the screen you came from. The two-minute idle timer closes a view you opened by hand.
+- **Snooze and automatic jump.** Seeing an alert in the view snoozes it for 15 minutes: it stays in the badge but will not
+  jump again. A red alert you have not seen, an amber that turns red, or a seen red whose 15 minutes ended jumps to the view by
+  itself, from wherever you are; the screen you left is remembered. Amber never jumps.
+- **Clearing.** Alerts leave the list when the cause clears. An alert that clears and returns counts as new. The view closes
+  by itself when the list is empty (home if it jumped by itself, back where you were if you opened it).
+- **Staleness.** With no fresh feed (over 75 s) the badge and alerts are hidden along with the numbers.
+- "Active for" counts from when the dashboard first saw the alert; a dashboard restart starts it again.
+
+### Claude usage
+Turned on by `PANEL_USAGE_TOKEN` on the dashboard; without it the route answers 404, the feed has no usage keys and the topic
+is not on the knob. A reporter on the Mac that runs Claude Code posts the 5-hour and weekly numbers (see `usage-reporter/`).
+Contract of `POST /api/panel/usage` (bearer token, JSON up to 1024 bytes, keys beyond these are rejected, the server stamps
+the receive time):
+```
+{"v":1,"five_hour":{"used_pct":37.5,"resets_at":1766250000},"weekly":{"used_pct":12,"resets_at":1766800000},
+ "models":[{"name":"Opus","used_pct":20,"resets_at":1766800000}]}
+```
+Replies: 200, 400 bad body, 401 bad token, 404 off, 413 too large. Numbers older than `PANEL_USAGE_STALE_S` (default 20 min)
+show as "old data"; a window whose reset time has passed is dropped. Thresholds are in `.env.example`.
 
 ### Missing data
 - Dashboard not reachable: "WAIT" for the first 45 s after boot, then "NO LINK" with the age of the last data. The panel
@@ -91,7 +118,7 @@ over USB, or join the "crowpanel-21 setup" hotspot (password `ap_password`) and 
 saved on the device and survives OTA updates. The hotspot comes back if the saved network cannot be reached.
 
 ## Tests
-`test/run.sh` builds and runs the host tests for the parser, navigation, auto-switch and every screen's text (needs
+`test/run.sh` builds and runs the host tests for the parser, navigation, alert view and every screen's text (needs
 g++ and the ArduinoJson v7 headers; set `ARDUINOJSON_DIR`). The feed side is tested by `npm test` in the repo.
 
 ## Knob and tuning
@@ -99,7 +126,7 @@ g++ and the ArduinoJson v7 headers; set `ARDUINOJSON_DIR`). The feed side is tes
 a screen, set the second to `-1` if clockwise goes backwards.
 
 ## Not verified on real hardware
-Only `esphome config`, `esphome compile` and the host tests have been run. Check on the device: text fit on the round
+Only `esphome config`, `esphome compile` and the host tests have been run. Check on the device: the long press feel (about a second; adjust `min_length` of the second `on_click` if it is too slow or too easy), the badge position on the round edge, the alert view wrapping, text fit on the round
 screen and colours, knob direction and clicks per step, the press (PCF8574 P5, active low), the Improv and hotspot Wi-Fi
 setup, the backlight dimming, and that the panel recovers after the dashboard restarts.
 

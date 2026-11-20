@@ -13,6 +13,10 @@
 //   rr  only on red: stable keys of the red reasons ("silent:<mac>", "array", "parity", "cache", "unraid"), at most 4.
 //       The key does not change when a number inside the reason changes (cache 91% -> 92%), so the panel can tell a NEW
 //       reason (a key it has not seen in this red spell) from the same one moving. why[] is for display only.
+//   al  only when something needs attention: priority alerts, most important first, at most MAX_ALERTS (6):
+//       [{ k stable key, tp topic "bl"|"nw"|"sd"|"ev"|"us", sv "r" red | "a" amber, m plain-language message (<= 90 chars),
+//          a seconds active }]. See lib/panelAlerts.ts. ac = true alert count, only when the list was cut.
+//       Red here is the same thing as lvl "r"; rr and go stay for older firmware, the panel itself uses al.
 //   br  only when PANEL_NIGHT_HOURS is set, or presence is on and says nobody is at the desk: backlight brightness the
 //       panel should use now, percent 1..100
 //   bl  Darkbloom per Mac (at most MAX_MACS):  m: [{ n name, on 1 serving, s state text, w watts, jobs sandbox jobs,
@@ -29,6 +33,9 @@
 //                                 na unread Unraid alert notifications, nwn unread warnings
 //   ev  tonight's charge plan (Rivian): plug 1 plugged in, soc %, lim charge limit %, amps, kwh wall kWh tonight,
 //                                 h charge window hours, tgt target SoC %, sf 1 shortfall, wk 1 work day
+//   us  Claude usage, only when PANEL_USAGE_TOKEN is set: h5 / wk { p % used, r seconds to reset }, m [{ n, p, r }] per-model
+//                                 weekly limits, bp 5-hour pace %/h, lm seconds to the limit at that pace, age seconds since
+//                                 the report, st 1 = report older than the stale window. See lib/panelUsage.ts.
 //
 // Missing numbers are left out of the object, never sent as null, to save bytes and parse work on the device.
 
@@ -40,6 +47,8 @@ export const INFLUX_FRESH_S = 5 * 60;          // Unraid points older than this 
 export const MAX_MACS = 4;                     // the firmware has room for this many Darkbloom pages
 export const MAX_LINKS = 4;                    // and this many network links
 export const MAX_DISKS = 16;                   // and this many disk rows
+
+import { DEFAULT_ALERT_CONFIG, capAlerts, collectAlerts, trackSince, type Alert, type AlertConfig } from './panelAlerts.ts';
 
 export type Level = 'g' | 'a' | 'r';
 export type Section = { ok: 0 | 1; st: 0 | 1; [k: string]: unknown };
@@ -336,11 +345,14 @@ export function parseEv(i: EvInput | null): Section {
 
 // ---------- alert level ----------
 
-export const CACHE_AMBER_PCT = 80;
-export const CACHE_RED_PCT = 90;
+export { CACHE_AMBER_PCT, CACHE_RED_PCT } from './panelAlerts.ts';
 
 // go: the section the panel jumps to on red ("bl" Darkbloom, "sd" storage), from the first red reason.
-export function alertLevel(sec: { bl: Section; nw: Section; sd: Section; ev: Section }): { lvl: Level; why: string[]; go?: string; rr?: string[] } {
+// The older reasons are decided here; the newer ones (array full, data cap, failover, Claude usage) come from the alert
+// list (lib/panelAlerts.ts) so the ring colour and the alert list always agree.
+const NEWER_ALERT = (k: string) => k === 'arrayfull' || k === 'cap' || k === 'failover' || k.startsWith('usage:');
+
+export function alertLevel(sec: { bl: Section; nw: Section; sd: Section; ev: Section; us?: Section }, cfg: AlertConfig = DEFAULT_ALERT_CONFIG): { lvl: Level; why: string[]; go?: string; rr?: string[] } {
   const red: string[] = [], amber: string[] = [], keys: string[] = [];
   let go: string | undefined;
   const bl = sec.bl as Section & { m?: { n: string; sl?: number }[]; al?: number };
@@ -352,17 +364,21 @@ export function alertLevel(sec: { bl: Section; nw: Section; sd: Section; ev: Sec
     if (sd.arr && sd.arr.toUpperCase() !== 'STARTED') { red.push(`array:${sd.arr}`); keys.push('array'); }
     if ((sd.pe ?? 0) > 0) { red.push('parity:err'); keys.push('parity'); }
     const cache = (sd.d ?? []).find((d) => d.r === 'c' && d.u !== undefined);
-    if (cache && (cache.u ?? 0) >= CACHE_RED_PCT) { red.push(`cache:${cache.u}%`); keys.push('cache'); }
+    if (cache && (cache.u ?? 0) >= cfg.cacheRed) { red.push(`cache:${cache.u}%`); keys.push('cache'); }
     if ((sd.na ?? 0) > 0) { red.push(`unraid:${sd.na}!`); keys.push('unraid'); }
     else if ((sd.nwn ?? 0) > 0) amber.push(`unraid:${sd.nwn}w`);
-    if (cache && (cache.u ?? 0) >= CACHE_AMBER_PCT && (cache.u ?? 0) < CACHE_RED_PCT) amber.push(`cache:${cache.u}%`);
-    const full = (sd.d ?? []).find((d) => d.r !== 'c' && (d.u ?? 0) >= 95);
+    if (cache && (cache.u ?? 0) >= cfg.cacheWarn && (cache.u ?? 0) < cfg.cacheRed) amber.push(`cache:${cache.u}%`);
+    const full = (sd.d ?? []).find((d) => d.r !== 'c' && (d.u ?? 0) >= cfg.diskWarn);
     if (full) amber.push(`full:${full.n}`);
     if (red.length > n) go ??= 'sd';
   }
   const nw = sec.nw as Section & { l?: { d?: number; u?: number }[] };
   if (nw.ok && nw.src === 'wan' && (nw.l ?? []).length && (nw.l ?? []).every((x) => (x.d ?? 0) < 0.01 && (x.u ?? 0) < 0.01)) amber.push('wan:idle');
   if ((sec.ev as Section & { sf?: number }).sf) amber.push('ev:short');
+  for (const a of collectAlerts(sec, cfg)) {
+    if (!NEWER_ALERT(a.k)) continue;
+    if (a.sv === 'r') { red.push(a.k); keys.push(a.k); } else amber.push(a.k);
+  }
   for (const k of ['bl', 'nw', 'sd', 'ev'] as const) {
     if (!sec[k].ok) amber.push(`src:${k}`);
     else if (sec[k].st) amber.push(`old:${k}`);
@@ -467,11 +483,11 @@ export function withBr(body: PanelBody, br: number | undefined): PanelBody {
 // ---------- aggregator ----------
 
 export type SourceFn = () => Promise<Section>;
-export interface Sources { bl: SourceFn; nw: SourceFn; sd: SourceFn; ev: SourceFn }
+export interface Sources { bl: SourceFn; nw: SourceFn; sd: SourceFn; ev: SourceFn; us?: SourceFn }   // us: Claude usage, only when enabled
 
 export interface PanelBody {
-  v: 1; t: number; lvl: Level; why: string[]; go?: string; rr?: string[]; br?: number;
-  bl: Section; nw: Section; sd: Section; ev: Section;
+  v: 1; t: number; lvl: Level; why: string[]; go?: string; rr?: string[]; br?: number; al?: Alert[]; ac?: number;
+  bl: Section; nw: Section; sd: Section; ev: Section; us?: Section;
 }
 
 export interface AggOpts {
@@ -479,6 +495,8 @@ export interface AggOpts {
   timeoutMs?: number;
   lastGood?: Map<string, { at: number; sec: Section }>;   // survives across calls (route keeps one)
   dim?: DimConfig | null;                                  // night dimming; null/undefined leaves "br" out
+  alertCfg?: AlertConfig;                                  // alert thresholds (defaults when omitted)
+  alertSince?: Map<string, number>;                        // alert key -> first seen ms; survives across calls
 }
 
 async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
@@ -494,26 +512,32 @@ export async function buildPanel(src: Sources, opts: AggOpts = {}): Promise<Pane
   const nowMs = opts.nowMs ?? Date.now();
   const timeoutMs = opts.timeoutMs ?? SOURCE_TIMEOUT_MS;
   const good = opts.lastGood ?? new Map();
-  const keys = ['bl', 'nw', 'sd', 'ev'] as const;
+  const keys = (src.us ? ['bl', 'nw', 'sd', 'ev', 'us'] : ['bl', 'nw', 'sd', 'ev']) as ('bl' | 'nw' | 'sd' | 'ev' | 'us')[];
   const out = await Promise.all(keys.map(async (k): Promise<Section> => {
     let sec: Section;
-    try { sec = await withTimeout(src[k](), timeoutMs); } catch { sec = { ok: 0, st: 0 }; }
+    try { sec = await withTimeout(src[k]!(), timeoutMs); } catch { sec = { ok: 0, st: 0 }; }
+    if (k === 'us') return sec;   // in-memory numbers with their own stale window: no last-good copy
     if (sec.ok) { good.set(k, { at: nowMs, sec }); return sec; }
     const g = good.get(k);
     if (g && nowMs - g.at <= LAST_GOOD_MAX_MS) return { ...g.sec, st: 1 };
     return { ok: 0, st: 0 };
   }));
   const [bl, nw, sd, ev] = out;
-  const { lvl, why, go, rr } = alertLevel({ bl, nw, sd, ev });
+  const us = src.us ? out[4] : undefined;
+  const cfg = opts.alertCfg ?? DEFAULT_ALERT_CONFIG;
+  const { lvl, why, go, rr } = alertLevel({ bl, nw, sd, ev, ...(us ? { us } : {}) }, cfg);
+  const { al, ac } = capAlerts(trackSince(opts.alertSince ?? new Map(), collectAlerts({ bl, nw, sd, ev, ...(us ? { us } : {}) }, cfg), nowMs));
   const body: PanelBody = {
     v: 1, t: Math.floor(nowMs / 1000), lvl, why, ...(go ? { go } : {}), ...(rr ? { rr } : {}),
-    ...(opts.dim ? { br: brightnessAt(opts.dim, nowMs) } : {}), bl, nw, sd, ev,
+    ...(opts.dim ? { br: brightnessAt(opts.dim, nowMs) } : {}),
+    ...(al.length ? { al } : {}), ...(ac ? { ac } : {}), bl, nw, sd, ev, ...(us ? { us } : {}),
   };
   return fitBody(body);
 }
 
 // The firmware reads at most PANEL_MAX_BYTES. If a body is over (many disks, long names), drop the least important
-// detail first: network totals, then disk temperatures, then the per-disk rows (the totals stay).
+// detail first: network totals, then disk temperatures, then per-model Claude limits, then the per-disk rows (the totals
+// stay), and only then the lowest-priority alerts.
 export function fitBody(body: PanelBody): PanelBody {
   const size = () => JSON.stringify(body).length;
   if (size() <= PANEL_MAX_BYTES) return body;
@@ -523,8 +547,16 @@ export function fitBody(body: PanelBody): PanelBody {
   const sd = body.sd as Section & { d?: Record<string, unknown>[] };
   if (sd.d) body.sd = { ...sd, d: sd.d.map(({ t, ...r }) => r) };
   if (size() <= PANEL_MAX_BYTES) return body;
+  const us = body.us as (Section & { m?: unknown[] }) | undefined;
+  if (us?.m) { const { m, ...rest } = us; body.us = rest as Section; }
+  if (size() <= PANEL_MAX_BYTES) return body;
   const sd2 = body.sd as Section & { d?: unknown[] };
   if (sd2.d) { const { d, ...rest } = sd2; body.sd = rest as Section; }
+  // Last resort: fewer alerts (they are ordered by priority, so the most important stay; "ac" keeps the true count).
+  while (body.al && body.al.length > 1 && size() > PANEL_MAX_BYTES) {
+    body.ac = body.ac ?? body.al.length;
+    body.al = body.al.slice(0, -1);
+  }
   return body;
 }
 
@@ -532,8 +564,9 @@ export function fitBody(body: PanelBody): PanelBody {
 // object so "br" can follow a fresh lock/unlock report on every request without waiting for the cache to expire.
 export interface PresenceSource { cfg: PresenceConfig | null; read: () => PresenceReport | null | Promise<PresenceReport | null> }
 
-export function makePanelCache(src: Sources, ttlMs = CACHE_MS, now: () => number = Date.now, dim: DimConfig | null = null, presence?: PresenceSource) {
+export function makePanelCache(src: Sources, ttlMs = CACHE_MS, now: () => number = Date.now, dim: DimConfig | null = null, presence?: PresenceSource, alertCfg?: AlertConfig) {
   const lastGood = new Map<string, { at: number; sec: Section }>();
+  const alertSince = new Map<string, number>();
   let at = 0;
   let body: PanelBody | null = null;
   let inflight: Promise<PanelBody> | null = null;
@@ -549,7 +582,7 @@ export function makePanelCache(src: Sources, ttlMs = CACHE_MS, now: () => number
     if (!inflight) {
       inflight = (async () => {
         try {
-          const b = await buildPanel(src, { nowMs: now(), lastGood, dim });
+          const b = await buildPanel(src, { nowMs: now(), lastGood, dim, alertCfg, alertSince });
           body = b;
           at = now();
           return b;
