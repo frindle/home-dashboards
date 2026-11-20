@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildNeedData, coverageOk, curveValue, ewmaNeed, fitTempCurve, liveNeed, miPerPctAt, modelA, modelB, offDayNeed, overridesFromPass1, planNeed, refitDateFor,
+  buildNeedData, coverageOk, curveValue, ewmaNeed, fitTempCurve, liveNeed, workDayMean, miPerPctAt, modelA, modelB, offDayNeed, overridesFromPass1, planNeed, refitDateFor,
   ruleFromShorts, simulate, tempNeed, walkDates, windowHoursFor, type DailyUse, type DriveIn,
 } from './needModels.ts';
 import { ampsFor, nightPlan } from './chargePlan.ts';
@@ -216,7 +216,7 @@ test('liveNeed: null under 5-of-7 coverage; worst drive-time temperature wins; o
   for (let i = 0; i < 60; i++) {
     const isWork = i % 7 < 5;
     const t = [35, 50, 65][i % 3];                               // three well-filled bands (the fit needs 3 temps)
-    rows.push(row(i, isWork ? 18 : 8, { miles: isWork ? 40 : 5 }));
+    rows.push(row(i, isWork ? 12 : 8, { miles: isWork ? 40 : 5 }));   // below the curve need, so the curve plans
     if (isWork) work.push(date(i));
     drives.push(drive(i, trueCurve(t) * 8, 8, t), drive(i, trueCurve(t) * 8, 8, t));
   }
@@ -231,6 +231,44 @@ test('liveNeed: null under 5-of-7 coverage; worst drive-time temperature wins; o
   assert.ok(none && none.work !== null);
   const gappy = rows.map((r, i) => (i >= 51 && i <= 53 ? { ...r, unknown: true, used_pct: null } : r));
   assert.equal(liveNeed(gappy, drives, work, date(56), [65]), null);
+});
+
+test('liveNeed: a thin history plans work days from measured work days, never the all-days mean', () => {
+  // A week like 11-14..11-20: five days off near 1.5%, two work days near 18%, the drive log
+  // short of a return leg (20 mi on a 40 mi day), no drives to fit a curve.
+  const rows = [row(0, 1), row(1, 1.5), row(2, 18, { miles: 20 }), row(3, 1), row(4, 10), row(5, 19, { miles: 40 }), row(6, 1.5)];
+  const work = [date(2), date(5), date(7)];
+  const n = liveNeed(rows, [], work, date(7), [55])!;
+  const wt = (i: number) => 0.5 ** ((7 - i) / 30);
+  const want = (wt(2) * 18 + wt(5) * 19) / (wt(2) + wt(5));
+  assert.ok(Math.abs(n.work! - want) < 1e-9);
+  assert.ok(n.work! > 18 && n.work! < 19);
+  assert.equal(n.workSource, 'measured');
+  // the old fallback, the all-days mean, would have planned about 7% here
+  assert.ok(ewmaNeed(buildNeedData(rows, [], work), date(7), true)!.pct < 8);
+  // one work day is enough
+  const one = liveNeed(rows.map((r, i) => (i === 5 ? row(5, 1) : r)), [], [date(2), date(7)], date(7), [55])!;
+  assert.equal(one.work, 18);
+  // no work day measured and no curve: null work, so the planner keeps the charge history
+  const none = liveNeed(rows, [], [date(7)], date(7), [55])!;
+  assert.equal(none.work, null);
+  assert.ok(none.off !== null);
+});
+
+test('liveNeed: measured work days floor the curve when the drive log misses drives', () => {
+  const rows: DailyUse[] = [], work: string[] = [], drives: DriveIn[] = [];
+  for (let i = 0; i < 60; i++) {
+    const isWork = i % 7 < 5;
+    const t = [35, 50, 65][i % 3];
+    rows.push(row(i, isWork ? 18 : 8, { miles: isWork ? 20 : 5 }));   // half the commute logged
+    if (isWork) work.push(date(i));
+    drives.push(drive(i, trueCurve(t) * 8, 8, t), drive(i, trueCurve(t) * 8, 8, t));
+  }
+  const n = liveNeed(rows, drives, work, date(56), [65])!;
+  assert.equal(n.workSource, 'measured');
+  assert.ok(Math.abs(n.work! - workDayMean(buildNeedData(rows, drives, work), date(56))!) < 1e-9);
+  assert.ok(Math.abs(n.work! - 18) < 1e-9);
+  assert.equal(workDayMean(buildNeedData(rows, drives, []), date(56)), null);
 });
 
 test('offDayNeed: mean of recent days off without outliers, work days and old days ignored', () => {
