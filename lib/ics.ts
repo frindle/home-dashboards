@@ -70,7 +70,7 @@ export interface IcsEvent {
   open: boolean;                 // CATEGORIES has "open shift"
   location: string;
   geo: LatLon | null;            // GEO:lat;lon
-  structuredGeo: LatLon | null;  // X-APPLE-STRUCTURED-LOCATION ...:geo:lat,lon
+  structuredGeo: LatLon | null;  // X-APPLE-STRUCTURED-LOCATION ...:geo:lat\,lon (or lat,lon)
   description: string;
 }
 
@@ -107,7 +107,8 @@ export function parseIcsEvents(ics: string): IcsEvent[] {
       const [a, b] = line.slice(4).split(';');
       e.geo = validPoint(parseFloat(a), parseFloat(b));
     } else if (line.startsWith('X-APPLE-STRUCTURED-LOCATION')) {
-      const m = /geo:(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/i.exec(line);
+      // Apple writes the point as geo:lat\,lon (the comma escaped, as in any text value).
+      const m = /geo:(-?\d+(?:\.\d+)?)\\?,(-?\d+(?:\.\d+)?)/i.exec(line);
       if (m) e.structuredGeo = validPoint(parseFloat(m[1]), parseFloat(m[2]));
     }
   }

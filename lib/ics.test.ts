@@ -36,6 +36,15 @@ test('parseIcsEvents: folded lines, escapes, structured location, GEO, descripti
   assert.equal(parseIcsEvents('').length, 0);
 });
 
+test('parseIcsEvents: the Apple structured location with the comma escaped (geo:lat\\,lon), as iCloud sends it', () => {
+  const ics = cal(ev('UID:c', 'DTSTART:20261123T170000Z',
+    'LOCATION:Some Place\\n123 W Example Ave\\, Las Vegas\\, NV 89123\\, United States',
+    'X-APPLE-STRUCTURED-LOCATION;VALUE=URI;X-APPLE-MAPKIT-HANDLE=CAESxyz;X-APPLE-RADIUS=70.5;X-APPLE-REFERENCEFRAME=1;X-TITLE=Some Place:geo:36.0412345\\,-115.1712345'));
+  const [c] = parseIcsEvents(ics);
+  assert.equal(c.location, 'Some Place\n123 W Example Ave, Las Vegas, NV 89123, United States');
+  assert.deepEqual(c.structuredGeo, { lat: 36.0412345, lon: -115.1712345 });
+});
+
 test('helpers: unfold and propValue skip colons inside quotes', () => {
   assert.deepEqual(unfoldIcs('A:1\r\n 2\r\nB:3'), ['A:12', 'B:3']);
   assert.equal(propValue('X;P="a:b":geo:1,2'), 'geo:1,2');
