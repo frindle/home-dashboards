@@ -90,3 +90,16 @@ test('too far: one push, daytime or tonight at the update slot, linking /chargin
   const tonight = day({ day: TODAY, raise: false, tooFar: true, miles: 260 });
   assert.equal(tripAlerts(ctx([tonight], { nowMs: late, slot: 'update' })).length, 1);
 });
+
+test('no pushes for days beyond the day after the one tonight serves; they go out once in range', () => {
+  const far = day({ day: TODAY + 7, dateLabel: 'Tue 11/24', reachable: false, multiDay: true, unplaced: 1, tooFar: true, overlaps: 1 });
+  assert.equal(tripAlerts(ctx([far])).length, 0);
+  assert.equal(tripAlerts(ctx([far], { serveDay: TODAY + 1 })).length, 0);
+  assert.equal(tripAlerts(ctx([day({ day: TODAY + 2 })])).length, 0);
+  assert.ok(tripAlerts(ctx([day({ day: TODAY + 2 })], { serveDay: TODAY + 1 })).some((x) => x.key === `trip-planned:${TODAY + 2}`));
+  // the same far day, a week later, is now tomorrow
+  const later = ctx([far], { today: TODAY + 6, serveDay: TODAY + 6, nowMs: new Date(2026, 10, 23, 10, 0).getTime() });
+  assert.ok(tripAlerts(later).some((x) => x.key === `trip-planned:${TODAY + 7}`));
+  // an overlap far out that settles sends no "fixed" push either
+  assert.equal(tripAlerts(ctx([], { openBefore: [TODAY + 7] })).length, 0);
+});
