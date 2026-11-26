@@ -127,7 +127,7 @@ export async function computeTrips(run: RivianPlanRun, nowMs: number, opts: { re
     if (dayEvents.length && !isAway) {
       plan = await planTripDay({
         day, localMs: (h) => dayTimeMs(day, h), home: homePt, homeRadiusM: Math.max(100, home.radiusMeters ?? 150),
-        shift, work, events: tripEvents, choices, toggles, route,
+        shift, work, events: tripEvents, choices, toggles, route, nowMs,
       });
       if (plan && !plan.unroutable && plan.miles > 0) {
         highF = await highFor(day, nowMs);
