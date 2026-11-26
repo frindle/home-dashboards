@@ -77,6 +77,9 @@ export interface TripDayInput {
   choices: Record<string, OverlapChoice>;
   toggles: Record<string, HomeTag>;
   route: RouteFn;
+  // The planning time. Timed events that have already ended are not driving still to come, and a
+  // departure already past while a stop is still ahead means "be ready now", not "no deadline".
+  nowMs?: number;
 }
 
 export type StopKind = 'home' | 'work' | 'event';
@@ -123,6 +126,7 @@ export async function planTripDay(inp: TripDayInput): Promise<TripDay | null> {
   const assumed: TripEvent[] = [];
   for (const e of inp.events) {
     if (inp.choices[choiceKey(e.uid, day)] === 'skip') continue;
+    if (inp.nowMs !== undefined && !e.allDay && endOf(e) <= inp.nowMs) continue;
     if (!e.point) {
       if (e.assumedMiles && e.assumedMiles > 0) assumed.push(e); else out.unplaced.push(e.uid);
       continue;
@@ -131,6 +135,7 @@ export async function planTripDay(inp: TripDayInput): Promise<TripDay | null> {
   }
   live.sort((a, b) => startOf(a) - startOf(b));
   assumed.sort((a, b) => startOf(a) - startOf(b));
+  const aheadOfNow = inp.nowMs !== undefined && [...live, ...assumed].some((e) => startOf(e) > inp.nowMs!);
 
   let fail = false;
   const go = async (a: LatLon, b: LatLon, atMs: number): Promise<Leg> => {
@@ -250,6 +255,13 @@ export async function planTripDay(inp: TripDayInput): Promise<TripDay | null> {
   out.miles = totalMiles;
   out.extraMiles = sh && work ? Math.max(0, totalMiles - commuteMiles) : 0;
   out.departMs = homeDeparts.length ? Math.min(...homeDeparts) : null;
+  // Today: a departure that has passed (the shift's, say) must not hide a later errand. Use the
+  // next one still ahead; with none ahead but a stop still to come, the car must be ready now.
+  if (inp.nowMs !== undefined && out.departMs !== null && out.departMs <= inp.nowMs) {
+    const later = homeDeparts.filter((d) => d > inp.nowMs!);
+    if (later.length) out.departMs = Math.min(...later);
+    else if (aheadOfNow) out.departMs = inp.nowMs + DEPART_SLACK_MIN_MS;
+  }
   return out;
 }
 

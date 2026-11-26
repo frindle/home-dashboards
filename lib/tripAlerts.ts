@@ -5,6 +5,8 @@
 import type { Alert } from './planAlerts.ts';
 
 const T = 'Rivian trip plan';
+// How many days past the day tonight's charge serves still get a push.
+export const PUSH_DAYS_PAST_SERVE = 1;
 
 export interface TripSummary {
   day: number;
@@ -45,8 +47,12 @@ export function tripAlerts(c: TripAlertCtx): Alert[] {
   const out: Alert[] = [];
   const add = (a: Alert) => { if (!c.sent.has(a.key)) out.push(a); };
   const daytime = min >= 8 * 60 && min < 22 * 60;
+  // Pushes only for days close enough to act on: through the day after the one tonight's charge
+  // serves. Days further out are still planned and shown on /trips; their pushes go out once the
+  // day comes into this window (Penn 11-26: no pushes about charging a week away).
+  const lastDay = Math.max(c.today, c.serveDay) + PUSH_DAYS_PAST_SERVE;
   for (const t of c.days) {
-    if (t.day < c.today) continue;
+    if (t.day < c.today || t.day > lastDay) continue;
     const l = link(c.dashboardUrl, t.day, 'Open trips');
     if (t.raise && t.byMs !== null) {
       if (!t.manual) {
@@ -109,7 +115,7 @@ export function tripAlerts(c: TripAlertCtx): Alert[] {
   // Fixed: an overlap that was open and is now resolved or gone.
   const stillOpen = new Set(c.days.filter((t) => t.overlaps > 0).map((t) => t.day));
   for (const day of c.openBefore) {
-    if (stillOpen.has(day) || day < c.today) continue;
+    if (stillOpen.has(day) || day < c.today || day > lastDay) continue;
     add({ key: `trip-overlap-fixed:${day}`, title: T, priority: 0,
       message: 'Overlapping event settled. The charge plan has been updated.' });
   }

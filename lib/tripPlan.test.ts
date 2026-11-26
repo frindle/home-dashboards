@@ -206,3 +206,49 @@ test('shift day: a dog event during the shift adds its miles once on top of the 
   const twice = await planTripDay(input([ev('s', 9, 10, null, { assumedMiles: 10 }), ev('t', 9, 10, null, { assumedMiles: 10 })], x));
   near(twice!.extraMiles, 10);
 });
+
+// ---- today's errands: planned after the day has started ----------------------------------------
+const ERRAND = P(0.29);   // ~20 mi each way: a 40 mi round trip
+const MIDNIGHT_30 = at(0) + 30 * 60_000;
+const MORNING = at(10);
+const workDayAt = (events: TripEvent[], nowMs: number) => planTripDay(input(events, { shift: SHIFT, work: WORK, nowMs }));
+
+test('today: an errand later in a work day raises the need, planned at 00:30 and at 10:00', async () => {
+  const errand = ev('e', 18, 19, ERRAND);
+  for (const now of [MIDNIGHT_30, MORNING]) {
+    const d = (await workDayAt([errand], now))!;
+    assert.ok(d.extraMiles > 20, `extra ${d.extraMiles} at ${now}`);
+    const adj = adjustForTrip({ isWork: true, baseNeedPct: 25, miles: d.miles, extraMiles: d.extraMiles, highF: 70 });
+    assert.ok(adj.raise && adj.needPct > 25, `need ${adj.needPct} at ${now}`);
+    // The shift's own departure has passed by 10:00; the errand must still have a deadline ahead.
+    assert.ok(d.departMs !== null && d.departMs > now, `depart ${d.departMs} at ${now}`);
+  }
+});
+
+test('today: an errand that has already ended is not counted', async () => {
+  const done = (await workDayAt([ev('e', 7, 8, ERRAND)], MORNING))!;
+  assert.equal(done.extraMiles, 0);
+  const adj = adjustForTrip({ isWork: true, baseNeedPct: 25, miles: done.miles, extraMiles: done.extraMiles, highF: 70 });
+  assert.equal(adj.raise, false);
+  // Planned before it ended, it counts.
+  assert.ok((await workDayAt([ev('e', 7, 8, ERRAND)], at(6)))!.extraMiles > 20);
+  // Day off: nothing left of the day, no plan at all.
+  assert.equal(await planTripDay(input([ev('e', 7, 8, ERRAND)], { nowMs: MORNING })), null);
+});
+
+test('today: an errand starting soon whose leave time has passed is "ready now", not dropped', async () => {
+  const d = (await planTripDay(input([ev('e', 10, 11, ERRAND, { startMs: at(10) + 30 * 60_000, endMs: at(11) + 30 * 60_000 })], { nowMs: MORNING })))!;
+  near(d.miles, 40, 1);
+  assert.equal(d.departMs, MORNING + 15 * 60_000);
+});
+
+test('an errand in progress counts, with no new deadline invented', async () => {
+  const d = (await planTripDay(input([ev('e', 9, 11, ERRAND)], { nowMs: MORNING })))!;
+  near(d.miles, 40, 1);
+  assert.ok(d.departMs !== null && d.departMs <= MORNING);
+});
+
+test('without nowMs nothing is filtered (future days)', async () => {
+  const d = (await planTripDay(input([ev('e', 7, 8, ERRAND)])))!;
+  near(d.miles, 40, 1);
+});
