@@ -91,7 +91,7 @@ export interface NeedData {
 }
 
 const dayNum = (date: string): number => Math.round(Date.parse(date + 'T00:00:00Z') / 86_400_000);
-const dateOf = (n: number): string => new Date(n * 86_400_000).toISOString().slice(0, 10);
+export const dateOf = (n: number): string => new Date(n * 86_400_000).toISOString().slice(0, 10);
 const isNum = (x: unknown): x is number => typeof x === 'number' && Number.isFinite(x);
 
 export function buildNeedData(rows: DailyUse[], drives: DriveIn[], workdays: string[]): NeedData {

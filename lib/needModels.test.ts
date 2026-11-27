@@ -396,3 +396,16 @@ test('rule8 / nightStats: a covered night with no room for a full 8A window is h
   // first night: SoC starts at the floor, which is not covered -> charges
   assert.equal(held[0].held, false);
 });
+
+test('workdaysFromCalendar: fake fetch, counts only, url unused in output', async () => {
+  const { workdaysFromCalendar } = await import('./backtestWorkdays.ts');
+  const ev = (d: string) => `BEGIN:VEVENT\r\nSUMMARY:D1A\r\nDTSTART:${d}T080000\r\nDTEND:${d}T160000\r\nEND:VEVENT\r\n`;
+  const ics = `BEGIN:VCALENDAR\r\n${ev('20260301')}${ev('20260610')}${ev('20260611')}${ev('20261101')}END:VCALENDAR\r\n`;
+  const fetchImpl = async () => ({ ok: true, status: 200, text: async () => ics });
+  const r = await workdaysFromCalendar('2026-05-06', '2026-10-31', { SHIFTS_ICS_URL: 'https://example.invalid/x.ics' }, fetchImpl);
+  assert.ok(r);
+  assert.equal(r.found, 4);
+  assert.equal(r.inRange, 2);
+  assert.equal(r.earliestMonth, '2026-03');
+  assert.equal(await workdaysFromCalendar(null, null, {}), null);
+});

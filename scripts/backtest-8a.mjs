@@ -5,9 +5,10 @@
 //   (c) (b) + the 8A rule: a covered night is held unless a full 00:00-08:00 window at 8A fits under the limit
 // Usage (TZ matters: drive timestamps are bucketed into local days):
 //   TZ=America/Los_Angeles node --experimental-strip-types scripts/backtest-8a.mjs \
-//     <rivian-daily-use.jsonl> <rivian-drives.jsonl> <workdays.json> [--limit 70] [--floor 25] [--since YYYY-MM-DD]
+//     <rivian-daily-use.jsonl> <rivian-drives.jsonl> (<workdays.json> | --workdays-ics) [--limit 70] [--floor 25] [--since YYYY-MM-DD]
 // Prints counts and aggregates only: never a row, a date or a per-day value.
 import { readFileSync } from 'node:fs';
+import { workdaysFromCalendar } from '../lib/backtestWorkdays.ts';
 import { buildNeedData, legacyOffDayNeed, LIVE_BAND_OVERRIDES, modelCombined, NEED_RULE, nightStats, simulate } from '../lib/needModels.ts';
 
 const args = process.argv.slice(2);
@@ -21,15 +22,25 @@ const opt = (name, dflt, str = false) => {
 const limit = opt('--limit', 70);
 const floor = opt('--floor', 25);
 const since = opt('--since', null, true);   // vehicle historySince; rows before it are ignored
+const useIcs = args.includes('--workdays-ics');
+if (useIcs) args.splice(args.indexOf('--workdays-ics'), 1);
 const [dailyPath, drivesPath, workPath] = args;
-if (!dailyPath || !drivesPath || !workPath) {
-  console.error('usage: backtest-8a.mjs <daily-use.jsonl> <drives.jsonl> <workdays.json> [--limit 70] [--floor 25] [--since YYYY-MM-DD]');
+if (!dailyPath || !drivesPath || (!workPath && !useIcs)) {
+  console.error('usage: backtest-8a.mjs <daily-use.jsonl> <drives.jsonl> (<workdays.json> | --workdays-ics) [--limit 70] [--floor 25] [--since YYYY-MM-DD]');
   process.exit(2);
 }
 const jsonl = (p) => readFileSync(p, 'utf8').split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
 const rows = jsonl(dailyPath).filter((r) => !since || r.date >= since);
 const drives = jsonl(drivesPath).filter((d) => !since || String(d.start).slice(0, 10) >= since);
-const data = buildNeedData(rows, drives, JSON.parse(readFileSync(workPath, 'utf8')));
+let workdays;
+if (useIcs) {
+  const lastDaily = rows.reduce((m, r) => (r.date > m ? r.date : m), '');
+  const w = await workdaysFromCalendar(since, lastDaily || null);
+  if (!w) { console.error('workdays: calendar not fetched (SHIFTS_ICS_URL unset or fetch failed)'); process.exit(3); }
+  console.log(`work days from the calendar: ${w.found} found, ${w.inRange} inside the history range, earliest month ${w.earliestMonth ?? 'none'}`);
+  workdays = w.days;
+} else workdays = JSON.parse(readFileSync(workPath, 'utf8'));
+const data = buildNeedData(rows, drives, workdays);
 
 const combined = modelCombined(data, LIVE_BAND_OVERRIDES, NEED_RULE);
 const legacy = (date, isWork, curve) => {
