@@ -1,7 +1,7 @@
 // Run: TZ=America/Los_Angeles node --experimental-strip-types --test lib/rivianSchedule.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { decideAmps, inEvWindow, inWindowShape, listInShape, managedIndex, noNeedFits, scheduleWithAmps, shapeOf } from './rivianSchedule.ts';
+import { decideAmps, inEvWindow, inWindowShape, listInShape, managedIndex, fullNightFits, noNeedFits, scheduleWithAmps, shapeOf } from './rivianSchedule.ts';
 
 const LOC = { latitude: 1, longitude: 2 };
 const ALL = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
@@ -149,4 +149,24 @@ test('decideAmps: a hold is lifted when tonight is needed in the window, or a sl
   const noPlan = decideAmps({ ...base, slot: 'update', nowMs: day, current: hold() });
   assert.deepEqual([noPlan.amps, noPlan.hold], [8, undefined]);
   assert.equal(decideAmps({ ...base, slot: 'update', nowMs: day, current: sch({ amperage: 8 }) }).amps, null);
+});
+
+test('fullNightFits: a no-need night needs a full window at 8A under the limit', () => {
+  // 8A x 0.24 kW/A x 8 h = 15.36 kWh; at 1.44 kWh per % that is 10.67%
+  assert.equal(fullNightFits(55, 70, 1.44, 8, 8), true);     // 15% of room: full night fits, charge
+  assert.equal(fullNightFits(60, 70, 1.44, 8, 8), false);    // 10% of room: can't, hold
+  assert.equal(fullNightFits(70, 70, 1.44, 8, 8), false);
+  assert.equal(fullNightFits(null, 70, 1.44, 8, 8), true);   // unknown: unchanged
+});
+
+test('no-need night: held when covered and a full 8A night does not fit; needed night is untouched', () => {
+  // covered + no room -> fits false -> hold at 8A (never below 8A)
+  const hold = decideAmps({ slot: 'update', nowMs: Date.now(), current: sch(), dailyAmps: null, overrideAmps: null, noNeed: { fits: false, minAmps: 8 } });
+  assert.deepEqual([hold.amps, hold.hold], [8, true]);
+  // covered + room -> charge at 8A for the window
+  const go = decideAmps({ slot: 'update', nowMs: Date.now(), current: sch({ amperage: 12 }), dailyAmps: null, overrideAmps: null, noNeed: { fits: true, minAmps: 8 } });
+  assert.deepEqual([go.amps, go.hold], [8, undefined]);
+  // not covered (a daily plan with need): no noNeed passed, charges the plan amps, 8A at least
+  const need = decideAmps({ slot: 'update', nowMs: Date.now(), current: sch({ amperage: 8 }), dailyAmps: 8, overrideAmps: null });
+  assert.notEqual(need.hold, true);
 });
