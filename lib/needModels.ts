@@ -12,8 +12,8 @@
 //                 mean of noisy 1%-resolution ratios), made robust with 4 Huber
 //                 IRLS passes. Temperature is clamped to the fitted range (flat,
 //                 never extrapolated) and the result to [1.2, 5] mi/%.
-//   offDayNeed    days off: mean of the last 90 days' days off, Tukey outliers
-//                 dropped (Penn 2026-11-12); the calendar trip layer raises it.
+//   offDayNeed    days off: mean of every past day off with at least one drive
+//                 (Penn 2026-11-27); the calendar trip layer raises it.
 //   planNeed      work days use (b) (or max(a,b), see NeedRule), off days
 //                 offDayNeed, null when daily use covers < 5 of the last 7 days.
 //   simulate      two modes: 'reach' leaves every morning at only the minimum
@@ -177,32 +177,24 @@ export function ewmaNeed(data: NeedData, asOf: string, isWork: boolean): EwmaNee
 
 // ---- days off ------------------------------------------------------------
 
-export const OFF_WINDOW_DAYS = 90;   // days off in this many days before asOf count
-export const OFF_FENCE_IQR = 1.5;    // Tukey fences: outside Q1 - k*IQR .. Q3 + k*IQR is an outlier
-
 export interface OffNeed { pct: number; source: 'off-avg' | 'kind' | 'all'; days: number; dropped: number }
 
-// Days off (Penn, 2026-11-12): "use averages of past days off, minus outliers,
-// or our calendar, whichever is more", with the same buffers as a work day.
-// This is the average half: the plain mean of the known days off in the last
-// OFF_WINDOW_DAYS, outliers (road trips, days the car sat) dropped by Tukey
-// fences. The calendar half is the trip layer (tripPlan.adjustForTrip: need =
-// max(this, routed events x 1.1)); the buffers (25% floor, x1.1) are nightPlan's.
-// Fewer than MIN_DAYS_PER_KIND days off kept: ewmaNeed's off/all-days mean.
+// Days off (Penn, 2026-11-27): "the average of days driven on days off, not including days with no
+// drives ... as many as we want, minimum one". The plain mean of every known day off that had at
+// least one drive, over the whole history the rows cover (the caller already cuts rows at the
+// vehicle's historySince): no window, no outlier fences. Days off with no drive are left out; they
+// only hold parked drain (~2%) and dragged the plan down to a few miles. The calendar half is the
+// trip layer (tripPlan.adjustForTrip: need = max(this, routed events x 1.1)); the buffers (25%
+// floor, x1.1) are nightPlan's. No day off with a drive: ewmaNeed's off/all-days mean, as before.
 export function offDayNeed(data: NeedData, asOf: string): OffNeed | null {
-  const from = dateOf(dayNum(asOf) - OFF_WINDOW_DAYS);
   const vals: number[] = [];
   for (const r of data.rows) {
     if (r.date >= asOf) break;
-    if (r.date < from || data.workDays.has(r.date) || !knownUse(r)) continue;
+    if (data.workDays.has(r.date) || !knownUse(r) || !(r.drives > 0) || !(r.miles > 0)) continue;
     vals.push(r.used_pct);
   }
-  const sorted = [...vals].sort((a, b) => a - b);
-  const q1 = quantile(sorted, 0.25), q3 = quantile(sorted, 0.75);
-  const kept = q1 === null || q3 === null ? sorted
-    : sorted.filter((v) => v >= q1 - OFF_FENCE_IQR * (q3 - q1) && v <= q3 + OFF_FENCE_IQR * (q3 - q1));
-  if (kept.length >= MIN_DAYS_PER_KIND) {
-    return { pct: kept.reduce((s, v) => s + v, 0) / kept.length, source: 'off-avg', days: kept.length, dropped: sorted.length - kept.length };
+  if (vals.length >= 1) {
+    return { pct: vals.reduce((s, v) => s + v, 0) / vals.length, source: 'off-avg', days: vals.length, dropped: 0 };
   }
   const a = ewmaNeed(data, asOf, false);
   return a ? { pct: a.pct, source: a.source, days: 0, dropped: 0 } : null;

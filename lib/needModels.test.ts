@@ -315,31 +315,48 @@ test('tempNeed: a work day logged one way gets its lost leg back', () => {
   assert.ok(Math.abs(build('none') - 24 / v) < 0.1);   // no home flags: nothing to go on, as before
 });
 
-test('offDayNeed: mean of recent days off without outliers, work days and old days ignored', () => {
+test('offDayNeed: mean of all past days off with a drive; zero-drive days excluded, no window', () => {
   const rows: DailyUse[] = [], work: string[] = [];
-  for (let i = 0; i < 140; i++) {
+  for (let i = 0; i < 200; i++) {
     const isWork = i % 7 < 4;
     if (isWork) work.push(date(i));
-    // days off: 8,10,12 repeating; one 60% road trip and one 0% day sit outside the fences;
-    // days off older than 90 days used 40 and must not count
-    const off = i === 123 ? 60 : i === 125 ? 0 : 8 + 2 * (i % 3);
-    rows.push(row(i, isWork ? 30 : i < 140 - 90 ? 40 : off));
+    // days off: 10 or 20 used with drives, every third one parked (2% drain, no drives); old ones count too
+    const off = i % 3 === 0 ? row(i, 2, { drives: 0, miles: 0 }) : row(i, i % 2 ? 10 : 20);
+    rows.push(isWork ? row(i, 30) : off);
   }
   const data = buildNeedData(rows, [], work);
-  const o = offDayNeed(data, date(140))!;
+  const want = rows.filter((r) => !work.includes(r.date) && r.drives > 0).map((r) => r.used_pct!);
+  const o = offDayNeed(data, date(200))!;
   assert.equal(o.source, 'off-avg');
-  assert.equal(o.dropped, 2);
-  assert.ok(Math.abs(o.pct - 10) < 0.5, String(o.pct));
+  assert.equal(o.days, want.length);
+  assert.ok(Math.abs(o.pct - want.reduce((s, v) => s + v, 0) / want.length) < 1e-9);
+  assert.ok(o.pct >= 10);
   // planNeed uses it for a day off
-  const offDay = 144;                                          // 144 % 7 = 4: a day off
-  const rows2 = [...rows, ...[140, 141, 142, 143].map((i) => row(i, 30))];
-  const data2 = buildNeedData(rows2, [], [...work, date(140), date(141), date(142), date(143)]);
-  const p2 = planNeed(data2, date(offDay), null, undefined)!;
-  assert.equal(p2.rule, 'off-avg');
-  assert.ok(Math.abs(p2.pct - offDayNeed(data2, date(offDay))!.pct) < 1e-9);
-  // too few days off: the EWMA fallback
-  const few = buildNeedData(rows.slice(0, 10), [], work);    // 3 days off
-  assert.notEqual(offDayNeed(few, date(10))?.source, 'off-avg');
+  const p = planNeed(data, date(201), null, undefined)!;
+  assert.equal(p.rule, 'off-avg');
+});
+
+test('offDayNeed: one qualifying day is enough', () => {
+  const rows = [row(0, 2, { drives: 0, miles: 0 }), row(1, 14), row(2, 3, { drives: 0, miles: 0 })];
+  const o = offDayNeed(buildNeedData(rows, [], []), date(3))!;
+  assert.equal(o.source, 'off-avg');
+  assert.equal(o.days, 1);
+  assert.equal(o.pct, 14);
+});
+
+test('offDayNeed: no day off with a drive keeps the EWMA fallback', () => {
+  const rows = [0, 1, 2].map((i) => row(i, 2, { drives: 0, miles: 0 }));
+  const o = offDayNeed(buildNeedData(rows, [], []), date(3))!;
+  assert.notEqual(o.source, 'off-avg');
+  assert.equal(o.days, 0);
+});
+
+test('offDayNeed: work days do not change the days-off average', () => {
+  const rows = [row(0, 12), row(1, 50), row(2, 8), row(3, 90)];
+  const base = offDayNeed(buildNeedData(rows, [], [date(1), date(3)]), date(4))!;
+  assert.equal(base.pct, 10);
+  const more = offDayNeed(buildNeedData([...rows, row(4, 70)], [], [date(1), date(3), date(4)]), date(5))!;
+  assert.equal(more.pct, 10);
 });
 
 test('nightPlan: a day off with a floor uses the work-day buffers (reach = 25 + use x 1.1)', () => {
