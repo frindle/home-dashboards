@@ -22,6 +22,17 @@ case "${1:-}" in
   --force) FORCE_BUILD="--force" ;;
 esac
 
+# Compose: the v2 plugin (`docker compose`) when present, else legacy docker-compose.
+# BuildKit is switched on for both: the Dockerfile uses cache mounts (npm, the Next
+# build cache), which the classic builder cannot run. COMPOSE_DOCKER_CLI_BUILD makes
+# legacy docker-compose hand the build to `docker build` (BuildKit); v2 always uses it.
+if docker compose version >/dev/null 2>&1; then
+  DC="docker compose"
+else
+  DC="docker-compose"
+fi
+export DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1
+
 # --- build only what changed -------------------------------------------------
 # $BUILD_MARKER holds the commit the image was last built from. It is
 # gitignored, so `git reset --hard` leaves it alone. It is written only after a
@@ -84,7 +95,7 @@ if [ "$DO_BUILD" = 1 ]; then
   export BUILD_SHA="$(git rev-parse --short HEAD)"
   echo "=== building${EXTRA_BUILD_ARGS:+ (no cache)} with BUILD_SHA=$BUILD_SHA: $BUILD_WHY ==="
   # shellcheck disable=SC2086
-  docker-compose build $EXTRA_BUILD_ARGS
+  $DC build $EXTRA_BUILD_ARGS
   # Reached only when the build succeeded (set -e).
   git rev-parse HEAD > "$BUILD_MARKER"
 else
@@ -95,7 +106,7 @@ else
 fi
 
 echo "=== restart ==="
-docker-compose up -d
+$DC up -d
 
 echo "=== done ==="
-docker-compose ps
+$DC ps

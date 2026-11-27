@@ -13,13 +13,15 @@ FROM base AS deps
 RUN apk add --no-cache libc6-compat
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci
+# BuildKit cache mount: npm's download cache survives between builds.
+RUN --mount=type=cache,target=/root/.npm npm ci
 
 FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-RUN npm run build
+# .next/cache is a BuildKit cache mount: a code-only commit recompiles only what changed.
+RUN --mount=type=cache,target=/app/.next/cache npm run build
 # /api/version falls back to comparing this against the latest main commit
 # date when BUILD_SHA wasn't passed (e.g. a plain `docker-compose build`
 # without a script setting it).
@@ -31,7 +33,7 @@ RUN date -u +"%Y-%m-%dT%H:%M:%SZ" > .build-time
 FROM base AS telemetry-deps
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci --omit=dev --no-audit --no-fund
+RUN --mount=type=cache,target=/root/.npm npm ci --omit=dev --no-audit --no-fund
 
 FROM base AS runner
 WORKDIR /app
