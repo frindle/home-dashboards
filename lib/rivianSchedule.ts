@@ -34,6 +34,18 @@ export function noNeedFits(headroomKw: number[], minAmps: number): boolean {
   return typeof room === 'number' && Number.isFinite(room) && minAmps * KW_PER_AMP <= room;
 }
 
+// Penn 2026-11-27: "assume 8A minimum a night; if we can't put in a full night at 8A don't charge."
+// On a no-need night (tomorrow already covered) a full window at minAmps must fit under the car's
+// limit, or the night is held. Unknown SoC, limit or kWh per % leave the old behaviour (fits).
+// A night with a need never goes through here: it charges at minAmps or more, ending early.
+export function fullNightFits(
+  socPct: number | null | undefined, limitPct: number | null | undefined, kwhPerPct: number | null | undefined,
+  hours: number, minAmps: number,
+): boolean {
+  if (typeof socPct !== 'number' || typeof limitPct !== 'number' || typeof kwhPerPct !== 'number' || !(kwhPerPct > 0)) return true;
+  return limitPct - socPct >= (minAmps * KW_PER_AMP * hours) / kwhPerPct - 1e-9;
+}
+
 export const ALL_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as const;
 
 // The schedule the dashboard manages: the enabled one covering the most

@@ -24,7 +24,7 @@ import { overridePlan, type ChargeOverride, type OverridePlan } from '@/lib/char
 import { fillTarget, forecastOff, readForecastSwitch, switchKey } from '@/lib/forecastSwitch';
 import { readOverride, writeOverride, type StoredOverride } from '@/lib/rivianOverrideStore';
 import {
-  decideAmps, EV_WINDOW, HOLD_DURATION_MIN, lateStartStep, listInShape, managedIndex, noNeedFits, NO_NEED_ROOM_QUANTILE_INDEX, scheduleWithAmps, writeSlot,
+  decideAmps, EV_WINDOW, fullNightFits, HOLD_DURATION_MIN, lateStartStep, listInShape, managedIndex, noNeedFits, NO_NEED_ROOM_QUANTILE_INDEX, scheduleWithAmps, writeSlot,
   type AmpsDecision, type Slot,
 } from '@/lib/rivianSchedule';
 import { fetchRivianChargingSchedules, setRivianChargingSchedules } from '@/lib/rivian';
@@ -267,7 +267,8 @@ async function runOnce(now: number, arrived = false): Promise<RivianChargeStatus
     if (!off && status.controlEnabled && plug.needed === false && planPlug.needed === false && built) {
       const room = await serveRoomFor(store, run, built.serveDay, now, forecastTemps);
       const rejected = store.holdRejectedServe === built.serveDay;
-      noNeedFits_ = rejected || noNeedFits(room.headroomKw, RIVIAN_MIN_AMPS);
+      noNeedFits_ = rejected || (noNeedFits(room.headroomKw, RIVIAN_MIN_AMPS)
+        && fullNightFits(planSoc, run.state?.chargeLimit, run.kwhPerPct, EV_WINDOW.durationMin / 60, RIVIAN_MIN_AMPS));
       holdNight = !noNeedFits_;
       status.noNeed = { roomKw: room.headroomKw[NO_NEED_ROOM_QUANTILE_INDEX] ?? null, hold: holdNight };
     }
