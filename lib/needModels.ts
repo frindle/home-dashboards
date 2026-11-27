@@ -200,6 +200,26 @@ export function offDayNeed(data: NeedData, asOf: string): OffNeed | null {
   return a ? { pct: a.pct, source: a.source, days: 0, dropped: 0 } : null;
 }
 
+// The day-off average before 2026-11-27 (last 90 days, zero-drive days included, Tukey outliers
+// dropped). Kept only so the backtest can score "main today" against the new average.
+export function legacyOffDayNeed(data: NeedData, asOf: string): OffNeed | null {
+  const from = dateOf(dayNum(asOf) - 90);
+  const vals: number[] = [];
+  for (const r of data.rows) {
+    if (r.date >= asOf) break;
+    if (r.date < from || data.workDays.has(r.date) || !knownUse(r)) continue;
+    vals.push(r.used_pct);
+  }
+  const sorted = [...vals].sort((x, y) => x - y);
+  const q1 = quantile(sorted, 0.25), q3 = quantile(sorted, 0.75);
+  const kept = q1 === null || q3 === null ? sorted : sorted.filter((v) => v >= q1 - 1.5 * (q3 - q1) && v <= q3 + 1.5 * (q3 - q1));
+  if (kept.length >= MIN_DAYS_PER_KIND) {
+    return { pct: kept.reduce((t, v) => t + v, 0) / kept.length, source: 'off-avg', days: kept.length, dropped: sorted.length - kept.length };
+  }
+  const e = ewmaNeed(data, asOf, false);
+  return e ? { pct: e.pct, source: e.source, days: 0, dropped: 0 } : null;
+}
+
 // ---- (b) ----------------------------------------------------------------
 
 export interface BandStat { band: number; workDrives: number; median: number | null; p25: number | null }
@@ -466,6 +486,9 @@ export interface WalkOptions {
   minHistoryDays?: number;
   margin?: number;          // default WORK_MARGIN
   mode?: SimMode;           // default 'reach'
+  // Live mode only: the 8A night rule (Penn 2026-11-27). A night already covered (SoC >= floor + day x
+  // margin) is held unless a full window at LIVE_MIN_AMPS fits under the limit.
+  rule8?: boolean;
 }
 
 export interface SimDay {
@@ -480,6 +503,9 @@ export interface SimDay {
   source: string;
   morning: number;
   arrival: number;
+  kwh: number;       // energy the night adds
+  fullKwh: number;   // what a full window at `amps` would add (kwh < fullKwh: stopped early)
+  held: boolean;     // rule8 held a covered night
 }
 
 export type NeedFn = (date: string, isWork: boolean, curve: TempCurve | null) => { pct: number; band?: number | null; source?: string } | null;
@@ -541,16 +567,21 @@ export function simulate(data: NeedData, needFn: NeedFn, opts: WalkOptions = {})
     const n = needFn(date, isWork, curves.get(refit)!);
     if (!n) { prevArrival = floor; continue; }
     const hours = windowHoursFor(date, isWork);
-    let morning: number, amps: number, nudge: boolean;
+    let morning: number, amps: number, nudge: boolean, held = false;
+    const soc0 = Math.max(0.01, prevArrival);
     if (mode === 'live') {
       const p = nightPlan({
         isWork, socPct: Math.max(0.01, prevArrival), limitPct: limit, usePct: n.pct, margin, floorPct: floor,
         topUpLimitPct: isWork ? topUpLimitFor(data.dayTempMax.get(date)) : null, windowHours: hours, kwhPerPct,
         minAmps: LIVE_MIN_AMPS, maxAmps: LIVE_MAX_AMPS,
       });
-      morning = p.endPct ?? Math.max(0.01, prevArrival) + p.totalPct;   // the car runs the window to its limit
+      morning = p.endPct ?? soc0 + p.totalPct;   // the car runs the window to its limit
       amps = p.amps ?? 0;
       nudge = p.raiseLimitTo !== null;
+      const covered = soc0 >= floor + Math.max(0, n.pct) * margin;
+      if (opts.rule8 && covered && limit - soc0 < (LIVE_MIN_AMPS * 0.24 * hours) / kwhPerPct - 1e-9) {
+        morning = soc0; amps = 0; held = true;
+      }
     } else {
       const target = floor + n.pct * margin;
       morning = Math.max(prevArrival, Math.min(limit, target));
@@ -561,6 +592,7 @@ export function simulate(data: NeedData, needFn: NeedFn, opts: WalkOptions = {})
     out.push({
       date, isWork, need: n.pct, actual: row.used_pct, short: arrival < floor,
       amps, nudge, band: n.band ?? null, source: n.source ?? '', morning, arrival,
+      kwh: Math.max(0, morning - soc0) * kwhPerPct, fullKwh: amps * 0.24 * hours, held,
     });
     prevArrival = arrival;
   }
@@ -631,4 +663,46 @@ export function summarize(days: SimDay[]): Summary {
     bias: n ? sum((d) => d.need - d.actual) / n : 0,
     nudges: days.filter((d) => d.nudge).length,
   };
+}
+
+// ---- night classification for the 8A backtest (counts only) ----------------
+
+export interface NightStats {
+  nights: number;
+  fullAt8: number;       // charged, a full window at 8A
+  partial: number;       // charged and stopped early (hit the limit before the window ended)
+  held: number;          // no charge
+  above8: number;        // charged at more than 8A
+  short25: { afterHeld: number; afterCharged: number };   // arrival below the floor
+  short15: { afterHeld: number; afterCharged: number };   // arrival below 15%
+  minArrival: number;
+  kwh: number;
+  maxAmps: number;
+  meanAmps: number;      // over charged nights
+}
+
+// "Arrival" is the day's end SoC: the morning SoC minus the day's used_pct from the daily-use log.
+// A night is "held" when no energy was added; "partial" when the car stopped before the window
+// ended (kwh below a full window at the planned amps); "above8" when amps > LIVE_MIN_AMPS.
+export function nightStats(days: SimDay[], floor = DEFAULT_FLOOR_PCT): NightStats {
+  const st: NightStats = {
+    nights: days.length, fullAt8: 0, partial: 0, held: 0, above8: 0,
+    short25: { afterHeld: 0, afterCharged: 0 }, short15: { afterHeld: 0, afterCharged: 0 },
+    minArrival: days.length ? Infinity : NaN, kwh: 0, maxAmps: 0, meanAmps: 0,
+  };
+  let ampSum = 0, charged = 0;
+  for (const d of days) {
+    const wasHeld = d.held || d.kwh < 1e-9;
+    st.kwh += d.kwh;
+    st.minArrival = Math.min(st.minArrival, d.arrival);
+    if (d.arrival < floor) st.short25[wasHeld ? 'afterHeld' : 'afterCharged']++;
+    if (d.arrival < 15) st.short15[wasHeld ? 'afterHeld' : 'afterCharged']++;
+    if (wasHeld) { st.held++; continue; }
+    charged++; ampSum += d.amps; st.maxAmps = Math.max(st.maxAmps, d.amps);
+    if (d.amps > LIVE_MIN_AMPS) st.above8++;
+    else if (d.kwh < d.fullKwh - 0.05) st.partial++;
+    else st.fullAt8++;
+  }
+  st.meanAmps = charged ? ampSum / charged : 0;
+  return st;
 }

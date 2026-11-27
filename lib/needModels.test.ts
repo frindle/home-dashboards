@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildNeedData, coverageOk, curveValue, ewmaNeed, fitTempCurve, liveNeed, workDayMean, miPerPctAt, modelA, modelB, offDayNeed, overridesFromPass1, planNeed, refitDateFor,
+  buildNeedData, coverageOk, curveValue, ewmaNeed, fitTempCurve, liveNeed, workDayMean, miPerPctAt, modelA, modelB, nightStats, offDayNeed, overridesFromPass1, planNeed, refitDateFor,
   ruleFromShorts, simulate, tempNeed, walkDates, windowHoursFor, type DailyUse, type DriveIn,
 } from './needModels.ts';
 import { ampsFor, nightPlan } from './chargePlan.ts';
@@ -163,7 +163,7 @@ test('simulate: short-morning counting on a 5-day hand-computed case', () => {
   assert.equal(windowHoursFor(date(3), true), 8);
   assert.equal(windowHoursFor(date(3), false), 8);
   // pass-1 override selection: band missing > 10% with enough days
-  const fake = Array.from({ length: 10 }, (_, i) => ({ date: date(i), isWork: true, need: 1, actual: 1, short: i < 2, amps: 0, nudge: false, band: 70, source: '', morning: 0, arrival: 0 }));
+  const fake = Array.from({ length: 10 }, (_, i) => ({ date: date(i), isWork: true, need: 1, actual: 1, short: i < 2, amps: 0, nudge: false, band: 70, source: '', morning: 0, arrival: 0, kwh: 0, fullKwh: 0, held: false }));
   assert.deepEqual([...overridesFromPass1(fake).keys()], [70]);
   assert.equal(overridesFromPass1(fake.slice(0, 4)).size, 0);
 });
@@ -370,4 +370,29 @@ test('nightPlan: a day off with a floor uses the work-day buffers (reach = 25 + 
     kwhPerPct: 1.44, minAmps: 6, maxAmps: 48,
   });
   assert.ok(Math.abs(q.needPct - 22) < 1e-9);
+});
+
+test('rule8 / nightStats: a covered night with no room for a full 8A window is held; needy nights charge', () => {
+  // days of 3% use: the 8A minimum adds ~10.7% a night, so the car climbs to the limit, nights become
+  // covered (SoC >= floor + 3.3) and then have less than a full 8A window of room
+  const rows: DailyUse[] = [];
+  for (let i = 0; i < 40; i++) rows.push(row(i, 3));
+  const data = buildNeedData(rows, [], []);
+  const fn = (_d: string, _w: boolean) => ({ pct: 3 });
+  const base = simulate(data, fn, { mode: 'live', limit: 70, floor: 25 });
+  const held = simulate(data, fn, { mode: 'live', limit: 70, floor: 25, rule8: true });
+  const sb = nightStats(base, 25), sh = nightStats(held, 25);
+  assert.equal(sb.nights, sh.nights);
+  assert.equal(sb.held, 0);                         // without the rule every night charges
+  assert.ok(sh.held > 0);                           // covered nights near the limit are held
+  assert.ok(sh.kwh < sb.kwh);
+  for (const d of held) {
+    if (d.held) assert.equal(d.amps, 0); else assert.ok(d.amps >= 8, 'never below 8A');
+  }
+  // a night with a need (SoC at the floor) is never held, and a high need keeps its amps
+  const needy = simulate(buildNeedData(rows.map((r) => ({ ...r, used_pct: 30 })), [], []), () => ({ pct: 30 }), { mode: 'live', limit: 70, floor: 25, rule8: true });
+  assert.ok(needy.every((d) => !d.held));
+  assert.ok(needy.some((d) => d.amps > 8));
+  // first night: SoC starts at the floor, which is not covered -> charges
+  assert.equal(held[0].held, false);
 });
