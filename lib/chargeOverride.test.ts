@@ -1,7 +1,7 @@
 // Run: TZ=America/Los_Angeles node --experimental-strip-types --test lib/chargeOverride.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { overridePlan, validOverride, windowsBetween } from './chargeOverride.ts';
+import { dayKwhFromDays, overridePlan, validOverride, windowsBetween } from './chargeOverride.ts';
 
 const at = (local: string) => Date.parse(local);   // ISO with explicit offset
 const H = 3_600_000;
@@ -73,4 +73,66 @@ test('overridePlan: infeasible -> maxAmps and the SoC it reaches; expired or SoC
   const done = overridePlan({ ...base, override: o, nowMs: at('2026-11-09T23:00:00-08:00'), socPct: 85, limitPct: 90 })!;
   assert.equal(done.amps, 6);
   assert.equal(done.raiseLimitTo, null);
+});
+
+test('validOverride: a trip target may sit below 50 when the caller allows it', () => {
+  const now = at('2026-11-09T12:00:00-08:00');
+  assert.equal(validOverride({ targetPct: 37, byMs: now + H }, now), null);
+  assert.deepEqual(validOverride({ targetPct: 37, byMs: now + H }, now, 1), { targetPct: 37, byMs: now + H });
+  assert.equal(validOverride({ targetPct: 0, byMs: now + H }, now, 1), null);
+});
+
+// A trip three days out that needs 37% by Monday 08:55, set late Friday at 44% SoC, with an
+// 00:00-08:00 window. Saturday is a work day (32.1 kWh), Sunday a day off (5.4 kWh).
+const EARLY = { startMin: 0, durationMin: 8 * 60 };
+const trip = { packKwh: 124.5, dailyKwh: 32.1, window: EARLY, minAmps: 8, maxAmps: 48, limitPct: 70,
+  override: { targetPct: 37, byMs: at('2026-11-16T08:55:00-08:00') } };
+const useByWeekday = (ms: number) => [5.4, 32.1, 32.1, 32.1, 32.1, 32.1, 32.1][new Date(ms).getDay()];
+
+test('overridePlan: SoC above the target pays for driving before the deadline', () => {
+  const p = overridePlan({ ...trip, nowMs: at('2026-11-13T23:13:00-08:00'), socPct: 44.1 })!;
+  assert.equal(p.windows, 3);
+  // 2 days and 47 minutes of 32.1 kWh driving, less the 7.1% above the target
+  const drive = 32.1 * (2 + 47 / (16 * 60));
+  assert.ok(Math.abs(p.needKwh - (drive - 7.1 / 100 * 124.5 / 0.9)) < 1e-9, String(p.needKwh));
+  assert.equal(p.amps, 10);          // 12 when the surplus was ignored (14 with the old 50% floor)
+  assert.equal(p.raiseLimitTo, null);
+  // Far above the target with little driving left: nothing to charge, minimum amps
+  const full = overridePlan({ ...base, override: { targetPct: 60, byMs: at('2026-11-11T07:00:00-08:00') },
+    nowMs: at('2026-11-09T22:00:00-08:00'), socPct: 90 })!;
+  assert.equal(full.needKwh, 0);
+  assert.equal(full.amps, 6);
+});
+
+test('overridePlan: each day counts its own use, and amps do not climb through the window', () => {
+  const first = overridePlan({ ...trip, dayKwh: useByWeekday, nowMs: at('2026-11-13T23:13:00-08:00'), socPct: 44.1 })!;
+  // Friday's last 47 minutes, Saturday's work day, Sunday off
+  const drive = 32.1 * 47 / (16 * 60) + 32.1 + 5.4;
+  assert.ok(Math.abs(first.needKwh - (drive - 7.1 / 100 * 124.5 / 0.9)) < 1e-9, String(first.needKwh));
+  assert.equal(first.amps, 8);       // 29.2 kWh over 24 h: the minimum, as the night plan wanted
+  // Later in the same window, charging at 8 A (about 1.4% an hour): still the minimum, no raise mid-window
+  for (const [t, soc] of [['2026-11-14T05:00:00-08:00', 51.0], ['2026-11-14T07:30:00-08:00', 54.5]] as const) {
+    assert.equal(overridePlan({ ...trip, dayKwh: useByWeekday, nowMs: at(t), socPct: soc })!.amps, 8, t);
+  }
+  // A null or non-finite day falls back to dailyKwh
+  const fallback = overridePlan({ ...trip, dayKwh: () => null, nowMs: at('2026-11-13T23:13:00-08:00'), socPct: 44.1 })!;
+  assert.equal(fallback.amps, 10);
+  assert.equal(overridePlan({ ...trip, dayKwh: () => NaN, nowMs: at('2026-11-13T23:13:00-08:00'), socPct: 44.1 })!.amps, 10);
+});
+
+test('dayKwhFromDays: the day\'s own need; serve day, unknown days and unknown work days left to dailyKwh', () => {
+  const days = [
+    { day: 14, baseNeedPct: 21.7, adj: null },
+    { day: 15, baseNeedPct: 3.65, adj: null },
+    { day: 16, baseNeedPct: 3.65, adj: { needPct: 16 } },
+  ];
+  const dayOf = (ms: number) => new Date(ms).getDate();
+  const f = dayKwhFromDays(days, { kwhPerPct: 1.5, workKnown: true, serveDay: 14, dayOf });
+  assert.equal(f(at('2026-11-14T12:00:00-08:00')), null);                         // serve day
+  assert.ok(Math.abs(f(at('2026-11-15T12:00:00-08:00'))! - 3.65 * 1.5) < 1e-9);   // day off
+  assert.equal(f(at('2026-11-16T12:00:00-08:00')), 16 * 1.5);                      // a trip day: its trip need
+  assert.equal(f(at('2026-11-20T12:00:00-08:00')), null);                          // past the layer
+  const unknown = dayKwhFromDays(days, { kwhPerPct: 1.5, workKnown: false, serveDay: 14, dayOf });
+  assert.equal(unknown(at('2026-11-15T12:00:00-08:00')), null);
+  assert.equal(dayKwhFromDays(days, { kwhPerPct: 0, workKnown: true, serveDay: 14, dayOf })(at('2026-11-15T12:00:00-08:00')), null);
 });

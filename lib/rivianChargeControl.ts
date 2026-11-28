@@ -20,7 +20,7 @@ import { readConfig } from '@/lib/config';
 import { arrivalFloorOf, localDayNumber, type NeedEstimate, type TonightPlan } from '@/lib/chargePlan';
 import type { LiveNeed } from '@/lib/needModels';
 import { recordPlan, recordShiftDays } from '@/lib/planInflux';
-import { overridePlan, type ChargeOverride, type OverridePlan } from '@/lib/chargeOverride';
+import { dayKwhFromDays, overridePlan, type ChargeOverride, type OverridePlan } from '@/lib/chargeOverride';
 import { fillTarget, forecastOff, readForecastSwitch, switchKey } from '@/lib/forecastSwitch';
 import { readOverride, writeOverride, type StoredOverride } from '@/lib/rivianOverrideStore';
 import {
@@ -197,6 +197,7 @@ async function runOnce(now: number, arrived = false): Promise<RivianChargeStatus
       socPct: run.state?.chargePercent, limitPct: run.state?.chargeLimit, packKwh,
       minAmps: RIVIAN_MIN_AMPS, maxAmps: RIVIAN_MAX_AMPS, override: o, nowMs: now,
       dailyKwh: status.dailyNeedKwh ?? 0, window: EV_WINDOW,
+      dayKwh: trips ? dayKwhFromDays(trips.layer.days, { kwhPerPct: run.kwhPerPct, workKnown: run.workDays !== null, serveDay: built?.serveDay ?? null, dayOf: localDayNumber }) : undefined,
     });
     status.overridePlan = activeOverride ? planFor(activeOverride) : null;
     await maybeNudge(status.override, status.overridePlan);

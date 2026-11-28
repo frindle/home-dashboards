@@ -9,7 +9,7 @@
 // line or Influx; the /trips page (LAN-only) is the one place places show.
 import { readConfig } from '@/lib/config';
 import { dayTimeMs, DEPART_BUFFER_MIN, localDayNumber, plannedFor } from '@/lib/chargePlan';
-import { overridePlan, validOverride, OVERRIDE_MIN_PCT, type ChargeOverride } from '@/lib/chargeOverride';
+import { dayKwhFromDays, overridePlan, validOverride, type ChargeOverride } from '@/lib/chargeOverride';
 import { influxTarget, writeLines } from '@/lib/chargeSessionInflux';
 import type { Alert } from '@/lib/planAlerts';
 import { packKwhFor, RIVIAN_PACK_KWH_DEFAULT } from '@/lib/packKwh';
@@ -161,17 +161,20 @@ export async function computeTrips(run: RivianPlanRun, nowMs: number, opts: { re
   const packKwh = packKwhFor(state?.batteryCapacityKwh, readConfig().vehicles.rivian.packKwh, RIVIAN_PACK_KWH_DEFAULT);
   let override: ChargeOverride | null = null;
   const summaries: TripSummary[] = [];
+  const dayKwh = dayKwhFromDays(days, { kwhPerPct: run.kwhPerPct, workKnown: run.workDays !== null, serveDay: run.built?.serveDay ?? null, dayOf: localDayNumber });
   for (const d of days) {
     if (!d.plan && !d.manual) continue;
     const raise = !!d.adj?.raise && d.byMs !== null && (!!d.manual || !d.plan?.needsWork);
     let reachable: boolean | null = null;
     let ov: ChargeOverride | null = null;
     if (raise && d.adj && d.byMs !== null) {
-      ov = validOverride({ targetPct: Math.max(OVERRIDE_MIN_PCT, Math.min(100, Math.round(d.adj.targetPct))), byMs: d.byMs }, nowMs);
+      // The trip's own target, even below 50%: it is a SoC to reach, not a charge limit. Lifting it to
+      // Rivian's lowest limit made a 37% trip charge toward 50% and beyond for days ahead.
+      ov = validOverride({ targetPct: Math.max(1, Math.min(100, Math.round(d.adj.targetPct))), byMs: d.byMs }, nowMs, 1);
       if (ov) {
         const op = overridePlan({
           override: ov, nowMs, socPct: state?.chargePercent, limitPct: state?.chargeLimit, packKwh,
-          dailyKwh: dailyNeedKwhOf(run) ?? 0, window: EV_WINDOW, minAmps: RIVIAN_MIN_AMPS, maxAmps: RIVIAN_MAX_AMPS,
+          dailyKwh: dailyNeedKwhOf(run) ?? 0, dayKwh, window: EV_WINDOW, minAmps: RIVIAN_MIN_AMPS, maxAmps: RIVIAN_MAX_AMPS,
         });
         reachable = op ? op.feasible : null;
         if (!override) override = ov;

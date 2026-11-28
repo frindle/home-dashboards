@@ -32,6 +32,9 @@ export interface OverridePlanInput {
   limitPct: number | null | undefined;
   packKwh: number;
   dailyKwh: number;
+  // The expected driving (wall kWh) on the local day holding dayMs, when the caller knows it per
+  // day; null or missing: dailyKwh. A work day and a day off differ a lot.
+  dayKwh?: (dayMs: number) => number | null | undefined;
   window: ChargeWindow;
   minAmps: number;
   maxAmps: number;
@@ -47,11 +50,29 @@ export interface OverridePlan {
   raiseLimitTo: number | null; // the target, when it is above the car's charge limit
 }
 
-// null when the override is malformed or out of range.
-export function validOverride(o: unknown, nowMs: number): ChargeOverride | null {
+// Per-day driving for overridePlan from the trip layer's days: each day's expected use (the work or
+// day-off need, or the day's trip when higher) in wall kWh. null leaves a day to dailyKwh: the serve
+// day (so it matches the night plan), a day past the layer, and every day while the work days are
+// unknown (dailyKwh is the larger work need then: better extra charge than too little).
+export function dayKwhFromDays(
+  days: readonly { day: number; baseNeedPct: number; adj: { needPct: number } | null }[],
+  p: { kwhPerPct: number; workKnown: boolean; serveDay: number | null; dayOf: (ms: number) => number },
+): (ms: number) => number | null {
+  return (ms) => {
+    if (!p.workKnown || !(p.kwhPerPct > 0)) return null;
+    const n = p.dayOf(ms);
+    if (n === p.serveDay) return null;
+    const d = days.find((x) => x.day === n);
+    return d ? Math.max(d.baseNeedPct, d.adj?.needPct ?? 0) * p.kwhPerPct : null;
+  };
+}
+
+// null when the override is malformed or out of range. minPct: a typed override is also a charge
+// limit, so 50 at least; a trip's target is only a SoC to reach and may be lower.
+export function validOverride(o: unknown, nowMs: number, minPct = OVERRIDE_MIN_PCT): ChargeOverride | null {
   const x = o as Partial<ChargeOverride> | null;
   if (!x || typeof x.targetPct !== 'number' || typeof x.byMs !== 'number') return null;
-  if (!Number.isInteger(x.targetPct) || x.targetPct < OVERRIDE_MIN_PCT || x.targetPct > OVERRIDE_MAX_PCT) return null;
+  if (!Number.isInteger(x.targetPct) || x.targetPct < minPct || x.targetPct > OVERRIDE_MAX_PCT) return null;
   if (!Number.isFinite(x.byMs) || x.byMs <= nowMs || x.byMs > nowMs + OVERRIDE_MAX_DAYS * DAY_MS) return null;
   return { targetPct: x.targetPct, byMs: x.byMs };
 }
@@ -80,15 +101,21 @@ export function overridePlan(p: OverridePlanInput): OverridePlan | null {
   const hours = wins.reduce((h, x) => h + (x.endMs - x.startMs) / HOUR_MS, 0);
   // Driving before the deadline: a full day between consecutive windows, and
   // before the first one the share of the day's driving time still to come.
-  // None after the last window: the deadline is the departure.
-  let driveDays = Math.max(0, wins.length - 1);
+  // None after the last window: the deadline is the departure. Each day counts its own use.
+  const useOn = (ms: number) => {
+    const k = p.dayKwh?.(ms);
+    return Math.max(0, typeof k === 'number' && Number.isFinite(k) ? k : p.dailyKwh);
+  };
+  let driveKwh = 0;
+  for (let i = 0; i < wins.length - 1; i++) driveKwh += useOn(wins[i].endMs - 1);
   if (wins.length && wins[0].startMs > p.nowMs) {
     const dayMs = DAY_MS - p.window.durationMin * 60_000;
-    driveDays += Math.min(1, (wins[0].startMs - p.nowMs) / dayMs);
+    driveKwh += Math.min(1, (wins[0].startMs - p.nowMs) / dayMs) * useOn(p.nowMs);
   }
-  const driveKwh = Math.max(0, p.dailyKwh) * driveDays;
-  const gapKwh = (Math.max(0, o.targetPct - soc) / 100) * p.packKwh / CHARGE_EFFICIENCY;
-  const needKwh = gapKwh + driveKwh;
+  // SoC above the target pays for some of that driving. Without it a car already past the target
+  // asked for every day's driving again, and the amps rose mid-window as the hours left shrank.
+  const gapKwh = ((o.targetPct - soc) / 100) * p.packKwh / CHARGE_EFFICIENCY;
+  const needKwh = Math.max(0, gapKwh + driveKwh);
   const kwhPerAmp = (CHARGE_VOLTS * hours) / 1000;
   const raw = kwhPerAmp > 0 ? Math.ceil(needKwh / kwhPerAmp / 2) * 2 : Infinity;
   const feasible = raw <= p.maxAmps;
